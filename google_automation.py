@@ -554,14 +554,19 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
                     logger.info("✅ Found correct offer URL: %s", current_url)
                     return current_url
 
-                # Check if page navigated and has offer content
-                if current_url != old_url:
-                    page_text = driver.page_source
-                    if _page_has_offer_content(page_text):
-                        logger.info("✅ Offer page content validated: %s", current_url)
-                        return current_url
+                # If URL still contains LOCKED, the page didn't navigate
+                # to the real claim page — device doesn't qualify
+                if "LOCKED" in current_url:
+                    logger.warning(
+                        "URL still contains LOCKED after click (%s). "
+                        "Device does not qualify for offer.",
+                        current_url,
+                    )
+                    return None  # Trigger retry
 
-                    # Also scan new page for partner-eft-onboard links
+                # Page navigated to non-LOCKED URL — scan for partner-eft-onboard
+                if current_url != old_url:
+                    # Scan new page for partner-eft-onboard links
                     new_links = driver.find_elements(By.TAG_NAME, "a")
                     for nl in new_links:
                         try:
@@ -571,6 +576,12 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
                                 return nh
                         except Exception:
                             continue
+
+                    # Check page content as last resort
+                    page_text = driver.page_source
+                    if _page_has_offer_content(page_text):
+                        logger.info("✅ Offer page content validated: %s", current_url)
+                        return current_url
 
                     logger.warning(
                         "Page navigated to %s but no valid offer found",
