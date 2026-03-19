@@ -48,9 +48,11 @@ def _find_nix_binary(name: str) -> Optional[str]:
 
 
 def _ensure_chromium_installed() -> tuple[Optional[str], Optional[str]]:
-    """Find or install Chromium and chromedriver.  Returns (chrome_bin, chromedriver_path)."""
+    """Find Chromium and chromedriver.  Returns (chrome_bin, chromedriver_path).
+
+    Raises GoogleAutomationError if neither can be found.
+    """
     import shutil
-    import subprocess
 
     # 1. Check environment variables
     chrome_bin = os.environ.get("CHROME_BIN")
@@ -69,24 +71,19 @@ def _ensure_chromium_installed() -> tuple[Optional[str], Optional[str]]:
     if not chromedriver_path:
         chromedriver_path = _find_nix_binary("chromedriver")
 
-    # 4. Auto-install via nix-env as last resort
-    if not chrome_bin or not chromedriver_path:
-        logger.info("Chrome/chromedriver not found. Attempting nix-env install...")
-        try:
-            subprocess.run(
-                ["nix-env", "-iA", "nixpkgs.chromium", "nixpkgs.chromedriver"],
-                check=True, capture_output=True, timeout=120,
-            )
-            # Re-check after install
-            if not chrome_bin:
-                chrome_bin = (shutil.which("chromium")
-                              or _find_nix_binary("chromium"))
-            if not chromedriver_path:
-                chromedriver_path = (shutil.which("chromedriver")
-                                     or _find_nix_binary("chromedriver"))
-            logger.info("nix-env install completed.")
-        except Exception as exc:
-            logger.warning("nix-env install failed: %s", exc)
+    # 4. Raise clear error if not found
+    if not chrome_bin:
+        raise GoogleAutomationError(
+            "Chromium is not installed. "
+            "Please run `bash setup.sh` in the Replit Shell first, "
+            "then restart the bot."
+        )
+    if not chromedriver_path:
+        raise GoogleAutomationError(
+            "chromedriver is not installed. "
+            "Please run `bash setup.sh` in the Replit Shell first, "
+            "then restart the bot."
+        )
 
     return chrome_bin, chromedriver_path
 
