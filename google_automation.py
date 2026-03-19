@@ -209,67 +209,85 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
                 logger.info("TOTP 2FA input field found for %s – awaiting code", email)
                 return "needs_totp"
 
-            # Not showing TOTP directly – try clicking "Try another way"
-            _try_another_selectors = (
-                '[data-challengetype]',           # General challenge selector
-                'button:has-text("Try another way")',
-                'a:has-text("Try another way")',
-            )
+            # Not showing TOTP input directly – try to navigate to it
             switched_to_totp = False
 
-            # Find and click "Try another way" link/button
             try:
-                try_another = None
-                for selector in (
-                    '//a[contains(text(), "another way")]',
-                    '//button[contains(text(), "another way")]',
-                    '//a[contains(text(), "other way")]',
-                    '//a[contains(text(), "Try another")]',
-                    '//span[contains(text(), "another way")]/ancestor::a',
-                    '//span[contains(text(), "another way")]/ancestor::button',
+                # Step 1: Try selecting TOTP directly on the page
+                # (works when already on /challenge/selection)
+                for opt_xpath in (
+                    '//*[@data-challengetype="6"]',    # TOTP challenge type
+                    '//div[@data-challengetype="6"]',
+                    '//div[contains(text(), "Authenticator")]',
+                    '//div[contains(text(), "authenticator")]',
+                    '//div[contains(text(), "Google Authenticator")]',
+                    '//div[contains(text(), "verification code")]',
+                    '//li[contains(., "Authenticator")]',
+                    '//li[contains(., "authenticator")]',
                 ):
                     try:
-                        try_another = driver.find_element(By.XPATH, selector)
-                        if try_another:
-                            break
+                        opt = driver.find_element(By.XPATH, opt_xpath)
+                        opt.click()
+                        time.sleep(2)
+                        switched_to_totp = True
+                        logger.info("Selected authenticator option directly for %s", email)
+                        break
                     except NoSuchElementException:
                         continue
 
-                if try_another:
-                    try_another.click()
-                    time.sleep(1)
-                    logger.info("Clicked 'Try another way' for %s", email)
-
-                    # Now look for authenticator / TOTP option in the list
-                    # Most likely selectors first for speed
-                    for opt_xpath in (
-                        '//*[@data-challengetype="6"]',    # TOTP challenge type
-                        '//div[@data-challengetype="6"]',
-                        '//div[contains(text(), "Authenticator")]',
-                        '//div[contains(text(), "authenticator")]',
-                        '//div[contains(text(), "Google Authenticator")]',
-                        '//div[contains(text(), "verification code")]',
-                        '//li[contains(., "Authenticator")]',
+                # Step 2: If not found, try clicking "Try another way" first
+                if not switched_to_totp:
+                    try_another = None
+                    for selector in (
+                        '//a[contains(text(), "another way")]',
+                        '//button[contains(text(), "another way")]',
+                        '//a[contains(text(), "other way")]',
+                        '//a[contains(text(), "Try another")]',
+                        '//span[contains(text(), "another way")]/ancestor::a',
+                        '//span[contains(text(), "another way")]/ancestor::button',
                     ):
                         try:
-                            opt = driver.find_element(By.XPATH, opt_xpath)
-                            opt.click()
-                            time.sleep(1)
-                            switched_to_totp = True
-                            logger.info("Selected authenticator option for %s", email)
-                            break
+                            try_another = driver.find_element(By.XPATH, selector)
+                            if try_another:
+                                break
                         except NoSuchElementException:
                             continue
 
-                    if switched_to_totp:
-                        return "needs_totp"
+                    if try_another:
+                        try_another.click()
+                        time.sleep(2)
+                        logger.info("Clicked 'Try another way' for %s", email)
 
-                    # Check if the page now shows TOTP after clicking
-                    page_text = driver.page_source.lower()
-                    if "authenticator" in page_text or "verification code" in page_text \
-                            or "enter the code" in page_text or "6-digit" in page_text \
-                            or "totppin" in page_text:
+                        # Now look for authenticator / TOTP option
+                        for opt_xpath in (
+                            '//*[@data-challengetype="6"]',
+                            '//div[@data-challengetype="6"]',
+                            '//div[contains(text(), "Authenticator")]',
+                            '//div[contains(text(), "authenticator")]',
+                            '//div[contains(text(), "Google Authenticator")]',
+                            '//div[contains(text(), "verification code")]',
+                            '//li[contains(., "Authenticator")]',
+                        ):
+                            try:
+                                opt = driver.find_element(By.XPATH, opt_xpath)
+                                opt.click()
+                                time.sleep(1)
+                                switched_to_totp = True
+                                logger.info("Selected authenticator option for %s", email)
+                                break
+                            except NoSuchElementException:
+                                continue
+
+                if switched_to_totp:
+                    return "needs_totp"
+
+                # Check if the page now shows TOTP input after navigation
+                for sel in _totp_input_selectors:
+                    try:
+                        driver.find_element(By.CSS_SELECTOR, sel)
                         return "needs_totp"
+                    except NoSuchElementException:
+                        continue
 
             except Exception as exc:
                 logger.warning("Error trying alternative 2FA: %s", exc)
