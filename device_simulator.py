@@ -57,12 +57,18 @@ def _generate_device_fingerprint(model: str, build_id: str,
 
 
 def _random_chrome_patch() -> str:
-    """Return a slightly randomised Chrome version string."""
-    major = config.CHROME_MAJOR_VERSION
-    minor = 0
-    build = random.randint(6360, 6380)
-    patch = random.randint(70, 100)
-    return f"{major}.{minor}.{build}.{patch}"
+    """Return the actual installed Chrome version with slight patch variation.
+
+    Uses the auto-detected version from config to avoid UA mismatch
+    with the real browser binary.
+    """
+    actual = config.CHROME_VERSION  # e.g. "146.0.7680.80"
+    parts = actual.split(".")
+    if len(parts) == 4:
+        # Only randomize the patch number slightly
+        parts[3] = str(int(parts[3]) + random.randint(-5, 5))
+        return ".".join(parts)
+    return actual
 
 
 def _random_build_id() -> str:
@@ -249,6 +255,49 @@ class DeviceProfile:
         Object.defineProperty(navigator, 'webdriver', {{
             get: () => undefined
         }});
+
+        // ── Battery API ──
+        if (navigator.getBattery) {{
+            const origGetBattery = navigator.getBattery.bind(navigator);
+            navigator.getBattery = () => Promise.resolve({{
+                charging: true,
+                chargingTime: Infinity,
+                dischargingTime: Infinity,
+                level: 0.87,
+                addEventListener: () => {{}},
+                removeEventListener: () => {{}},
+                dispatchEvent: () => true,
+                onchargingchange: null,
+                onchargingtimechange: null,
+                ondischargingtimechange: null,
+                onlevelchange: null,
+            }});
+        }}
+
+        // ── Timezone override ──
+        const origDateTimeFormat = Intl.DateTimeFormat;
+        Intl.DateTimeFormat = function(locale, options) {{
+            options = options || {{}};
+            options.timeZone = options.timeZone || 'America/Los_Angeles';
+            return new origDateTimeFormat(locale, options);
+        }};
+        Intl.DateTimeFormat.prototype = origDateTimeFormat.prototype;
+        Object.defineProperty(Intl.DateTimeFormat, 'supportedLocalesOf', {{
+            value: origDateTimeFormat.supportedLocalesOf
+        }});
+
+        // ── Canvas fingerprint noise ──
+        const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type) {{
+            const ctx = this.getContext('2d');
+            if (ctx) {{
+                const style = ctx.fillStyle;
+                ctx.fillStyle = 'rgba(0,0,{random.randint(1,3)},0.01)';
+                ctx.fillRect(0, 0, 1, 1);
+                ctx.fillStyle = style;
+            }}
+            return origToDataURL.apply(this, arguments);
+        }};
         """
 
     def summary(self) -> str:

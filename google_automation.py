@@ -153,6 +153,22 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
             {"enabled": True, "maxTouchPoints": SPECS["max_touch_points"]},
         )
 
+        # Set timezone to US Pacific (most Pixel offers are US)
+        driver.execute_cdp_cmd(
+            "Emulation.setTimezoneOverride",
+            {"timezoneId": "America/Los_Angeles"},
+        )
+
+        # Set geolocation to Mountain View, CA (Google HQ area)
+        driver.execute_cdp_cmd(
+            "Emulation.setGeolocationOverride",
+            {
+                "latitude": 37.3861,
+                "longitude": -122.0839,
+                "accuracy": 100,
+            },
+        )
+
         logger.info(
             "Device emulation configured: %s (Build %s, Chrome %s)",
             profile.model, profile.build_id, profile.chrome_version,

@@ -14,8 +14,31 @@ DEVICE_MANUFACTURER = "Google"
 ANDROID_VERSION = "16"
 ANDROID_SDK = "36"
 BUILD_ID = "AP4A.250405.002"
-CHROME_VERSION = "124.0.6367.82"
-CHROME_MAJOR_VERSION = 124
+
+# ── Auto-detect installed Chrome version ─────────────────────────────────────
+# Avoids UA/Client-Hints mismatch with the actual browser binary.
+def _detect_chrome_version() -> tuple[str, int]:
+    """Detect installed Chrome/Chromium version. Falls back to defaults."""
+    import subprocess, shutil
+    for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
+        path = shutil.which(binary)
+        if not path:
+            continue
+        try:
+            out = subprocess.check_output(
+                [path, "--version"], stderr=subprocess.DEVNULL, timeout=5,
+            ).decode().strip()
+            # "Chromium 146.0.7680.80" or "Google Chrome 124.0.6367.82"
+            parts = out.split()
+            for part in parts:
+                if "." in part and part[0].isdigit():
+                    major = int(part.split(".")[0])
+                    return part, major
+        except Exception:
+            continue
+    return "124.0.6367.82", 124
+
+CHROME_VERSION, CHROME_MAJOR_VERSION = _detect_chrome_version()
 
 # Pool of realistic Pixel 10 Pro user-agent strings.
 # The actual UA is assembled dynamically in device_simulator.py by
