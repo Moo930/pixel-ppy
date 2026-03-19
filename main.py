@@ -324,7 +324,12 @@ async def _report_offer(update_or_chat_id, context, session, offer_link) -> None
 
 async def check_offer(update: Update,
                       context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Run Google One automation and report the result."""
+    """Run Google One automation and report the result.
+
+    If the offer is not found, retry with a new device profile up to
+    ``_MAX_OFFER_ATTEMPTS`` times before reporting failure.
+    """
+    _MAX_OFFER_ATTEMPTS = 3
     chat_id = update.effective_chat.id
     session = _get_session(chat_id)
 
@@ -355,11 +360,6 @@ async def check_offer(update: Update,
         _LAST_CHECK_TIME.pop(chat_id, None)
         return ConversationHandler.END
 
-    device = session.get("device")
-    if not device:
-        device = create_device_profile()
-        session["device"] = device
-
     await update.message.reply_text(
         "⏳ Launching Pixel 10 Pro device simulator and logging in…\n"
         "This may take up to 60 seconds."
@@ -370,71 +370,98 @@ async def check_offer(update: Update,
             # Decode bytearray credentials to str for Selenium
             email_str = bytes(session["email"]).decode("utf-8")
             pw_str = bytes(session["password"]).decode("utf-8")
+            offer_link = None
 
-            # Start login in a thread
-            driver, status = await asyncio.to_thread(
-                start_login, email_str, pw_str, device,
-            )
+            for attempt in range(1, _MAX_OFFER_ATTEMPTS + 1):
+                # Create a fresh device profile for each attempt
+                device = create_device_profile()
+                session["device"] = device
 
-            if status == "needs_totp":
-                # Check if TOTP secret is stored for auto-generation
-                totp_secret = session.get("totp_secret")
-                if totp_secret:
-                    try:
-                        import pyotp
-                        totp = pyotp.TOTP(totp_secret)
-                        code = totp.now()
-                        logger.info("Auto-generated TOTP code for chat %s", chat_id)
+                if attempt > 1:
+                    await update.message.reply_text(
+                        f"🔄 Attempt {attempt}/{_MAX_OFFER_ATTEMPTS}: "
+                        "Creating new Pixel 10 Pro device and retrying…"
+                    )
 
-                        accepted = await asyncio.to_thread(
-                            submit_2fa_code, driver, code,
-                        )
-                        if not accepted:
-                            close_driver(driver)
+                # Start login in a thread
+                driver = None
+                try:
+                    driver, status = await asyncio.to_thread(
+                        start_login, email_str, pw_str, device,
+                    )
+
+                    if status == "needs_totp":
+                        totp_secret = session.get("totp_secret")
+                        if totp_secret:
+                            try:
+                                import pyotp
+                                totp = pyotp.TOTP(totp_secret)
+                                code = totp.now()
+                                logger.info(
+                                    "Auto-generated TOTP code for chat %s (attempt %d)",
+                                    chat_id, attempt,
+                                )
+
+                                accepted = await asyncio.to_thread(
+                                    submit_2fa_code, driver, code,
+                                )
+                                if not accepted:
+                                    close_driver(driver)
+                                    driver = None
+                                    await update.message.reply_text(
+                                        "❌ Auto-generated TOTP code was rejected. "
+                                        "Please check your TOTP secret key."
+                                    )
+                                    return ConversationHandler.END
+
+                                # 2FA passed – check offer
+                                offer_link = await asyncio.to_thread(
+                                    check_offer_with_driver, driver,
+                                )
+                            except Exception as exc:
+                                logger.warning("Auto-TOTP failed: %s", exc)
+                                close_driver(driver)
+                                driver = None
+                                await update.message.reply_text(
+                                    f"❌ Auto-TOTP error: {exc}\n"
+                                    "Please check your TOTP secret key."
+                                )
+                                return ConversationHandler.END
+                        else:
+                            # No TOTP secret – ask user for code interactively
+                            # (no retry for interactive 2FA)
+                            session["_driver"] = driver
                             await update.message.reply_text(
-                                "❌ Auto-generated TOTP code was rejected. "
-                                "Please check your TOTP secret key."
+                                "🔐 *Two-Factor Authentication Required*\n\n"
+                                "Please enter your 6-digit authenticator code:",
+                                parse_mode="Markdown",
                             )
-                            return ConversationHandler.END
-
-                        # 2FA passed – check offer
-                        try:
-                            offer_link = await asyncio.to_thread(
-                                check_offer_with_driver, driver,
-                            )
-                        finally:
-                            close_driver(driver)
-
-                        await _report_offer(update, context, session, offer_link)
-                        return ConversationHandler.END
-                    except Exception as exc:
-                        logger.warning("Auto-TOTP failed: %s", exc)
-                        close_driver(driver)
-                        await update.message.reply_text(
-                            f"❌ Auto-TOTP error: {exc}\n"
-                            "Please check your TOTP secret key."
+                            return AWAIT_2FA_CODE
+                    else:
+                        # Login succeeded (no 2FA) – check offer
+                        offer_link = await asyncio.to_thread(
+                            check_offer_with_driver, driver,
                         )
-                        return ConversationHandler.END
+                finally:
+                    if driver:
+                        close_driver(driver)
 
-                # No TOTP secret – ask user for code interactively
-                session["_driver"] = driver
-                await update.message.reply_text(
-                    "🔐 *Two-Factor Authentication Required*\n\n"
-                    "Please enter your 6-digit authenticator code:",
-                    parse_mode="Markdown",
-                )
-                return AWAIT_2FA_CODE
+                # If offer found, stop retrying
+                if offer_link:
+                    logger.info(
+                        "Offer found on attempt %d for chat %s: %s",
+                        attempt, chat_id, offer_link,
+                    )
+                    break
 
-            # Login succeeded – check offer
-            try:
-                offer_link = await asyncio.to_thread(
-                    check_offer_with_driver, driver,
+                # Offer not found – log and retry
+                logger.info(
+                    "No offer found on attempt %d/%d for chat %s",
+                    attempt, _MAX_OFFER_ATTEMPTS, chat_id,
                 )
-            finally:
-                close_driver(driver)
 
     except GoogleAutomationError as exc:
-        await update.message.reply_text(f"❌ *Error:* {exc}", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ <b>Error:</b> {exc}", parse_mode="HTML")
         return ConversationHandler.END
     except Exception as exc:
         logger.exception("Unexpected error in check_offer for chat %s", chat_id)
@@ -448,6 +475,18 @@ async def check_offer(update: Update,
         if isinstance(pw, bytearray):
             _secure_wipe(pw)
         session.pop("password", None)
+
+    if not offer_link:
+        await update.message.reply_text(
+            f"❌ 经过 {_MAX_OFFER_ATTEMPTS} 次尝试，未找到 Gemini Pro 优惠。\n\n"
+            "您的账号不符合 Pixel 设备 Gemini Pro 12个月免费领取条件。\n"
+            "可能的原因：\n"
+            "• 账号地区不支持\n"
+            "• 已有有效的 Gemini Pro 订阅\n"
+            "• 账号在家庭组中且有成员已订阅\n"
+            "• 新注册账号触发风控"
+        )
+        return ConversationHandler.END
 
     await _report_offer(update, context, session, offer_link)
     return ConversationHandler.END
