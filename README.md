@@ -2,8 +2,8 @@
 
 **Pixel 10 Pro Google One Gemini Offer Bot – Telegram Interface**
 
-A Replit-hosted Telegram bot that simulates a Google Pixel 10 Pro (Android 16)
-device, logs into a user-supplied Gmail account, and retrieves the
+A Telegram bot that simulates a Google Pixel 10 Pro (Android 16) device,
+logs into a user-supplied Gmail account, and retrieves the
 **12-month free Gemini Pro** activation link from Google One.
 
 ---
@@ -16,6 +16,8 @@ pixel-gemini/
 ├── device_simulator.py   # Android Pixel 10 Pro device simulation
 ├── google_automation.py  # Google One login and offer detection
 ├── config.py             # Configuration and constants
+├── Dockerfile            # Docker image definition
+├── docker-compose.yml    # Docker Compose orchestration
 ├── requirements.txt      # Python dependencies
 └── README.md             # This file
 ```
@@ -27,18 +29,28 @@ pixel-gemini/
 | Feature | Details |
 |---|---|
 | 📱 Device simulation | Pixel 10 Pro (Android 16) with unique IMEI, Android ID, and user-agent per session |
-| 🤖 Telegram bot | `/start`, `/login`, `/check_offer`, `/get_link`, `/status` commands |
+| 🤖 Telegram bot | `/start`, `/login`, `/check_offer`, `/get_link`, `/status`, `/logout` commands |
 | 🔐 Gmail login | Selenium-based Google account authentication |
 | 💳 Offer detection | Scans Google One for the 12-month Gemini Pro offer and extracts the activation link |
-| 🔄 Session management | In-memory per-user sessions; passwords deleted from chat on capture |
+| 🔄 Session management | In-memory per-user sessions with secure credential wiping |
+| 🛡️ Security | Passwords stored as `bytearray` with in-place memory erasure, per-user rate limiting |
 
 ---
 
-## Setup on Replit
+## Deployment (Ubuntu + Docker)
 
-### 1. Fork / import this repository
+### Prerequisites
 
-Open [Replit](https://replit.com) and create a new Repl from this GitHub repo.
+- Ubuntu 24.04 64-bit server
+- Docker and Docker Compose installed
+
+### 1. Install Docker
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# Log out and back in for group change to take effect
+```
 
 ### 2. Create a Telegram Bot
 
@@ -46,32 +58,36 @@ Open [Replit](https://replit.com) and create a new Repl from this GitHub repo.
 2. Send `/newbot` and follow the prompts.
 3. Copy the API token you receive (looks like `123456:ABC-DEF…`).
 
-### 3. Set the environment variable
-
-In the Replit sidebar click **Secrets** (🔒) and add:
-
-| Key | Value |
-|---|---|
-| `TELEGRAM_BOT_TOKEN` | Your token from BotFather |
-
-### 4. Install dependencies
+### 3. Clone and configure
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/Moo930/pixel-ppy.git
+cd pixel-ppy
+
+# Create environment file
+cp .env.example .env
+nano .env
+# Set TELEGRAM_BOT_TOKEN=<your token from BotFather>
 ```
 
-Replit runs this automatically on first start if you use a `pyproject.toml`
-or if the Run button is configured to execute `pip install` first.
-
-### 5. Run the bot
-
-Click **Run** in Replit, or execute:
+### 4. Build and run
 
 ```bash
-python main.py
+# Build image and start container (detached)
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
 ```
 
-The bot will start polling for Telegram updates.
+### 5. Management commands
+
+```bash
+docker compose down        # Stop the bot
+docker compose restart     # Restart the bot
+docker compose logs -f     # View live logs
+docker compose up -d --build  # Rebuild after code changes
+```
 
 ---
 
@@ -84,6 +100,7 @@ The bot will start polling for Telegram updates.
 | `/check_offer` | Simulate device, log in, and search for the Gemini Pro offer |
 | `/get_link` | Retrieve the last captured offer link |
 | `/status` | View current session info and device profile |
+| `/logout` | Securely clear credentials and session data |
 
 ### Typical flow
 
@@ -113,19 +130,18 @@ Bot: 🎉 Gemini Pro Offer Found! 🔗 https://one.google.com/…
   the Pixel 10 Pro screen dimensions (390 × 844, pixel ratio 3.0).
 - A new **IMEI**, **Android ID**, and **Chrome version patch** are generated
   for every session using the `device_simulator.py` module.
-- The **user agent** keeps the Pixel 10 Pro identity constant while varying
-  the Chrome patch version and Android ID to reduce fingerprinting.
-- Credentials are stored **in memory only** and never written to disk.
-  The Telegram message containing the password is deleted immediately after
-  being read.
+- Credentials are stored as **`bytearray`** objects for secure in-place
+  memory erasure. Passwords are wiped after use and never written to disk.
+- **Rate limiting**: 5-minute cooldown per user between `/check_offer` calls.
+- **Concurrency control**: Maximum 3 simultaneous Chrome instances.
+- Session **TTL** of 30 minutes with automatic cleanup.
 
 ---
 
 ## Requirements
 
-- Python 3.10+
-- Google Chrome / Chromium installed (Replit provides this)
-- `chromedriver` on PATH (managed automatically by `webdriver-manager`)
+- Docker (recommended) or Python 3.10+ with Chromium and chromedriver
+- A Telegram Bot token from @BotFather
 
 ---
 

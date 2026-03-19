@@ -34,55 +34,31 @@ logger = logging.getLogger(__name__)
 
 # ── Driver factory ────────────────────────────────────────────────────────────
 
-def _find_nix_binary(name: str) -> Optional[str]:
-    """Search /nix/store for a binary by *name* (e.g. 'chromium', 'chromedriver')."""
-    import glob
-    for path in glob.glob(f"/nix/store/*/bin/{name}"):
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    # Also check ~/.nix-profile
-    profile_path = os.path.expanduser(f"~/.nix-profile/bin/{name}")
-    if os.path.isfile(profile_path) and os.access(profile_path, os.X_OK):
-        return profile_path
-    return None
-
-
-def _ensure_chromium_installed() -> tuple[Optional[str], Optional[str]]:
+def _ensure_chromium_installed() -> tuple[str, str]:
     """Find Chromium and chromedriver.  Returns (chrome_bin, chromedriver_path).
 
-    Raises GoogleAutomationError if neither can be found.
+    Raises GoogleAutomationError if either cannot be found.
     """
     import shutil
 
-    # 1. Check environment variables
-    chrome_bin = os.environ.get("CHROME_BIN")
-    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
+    # Check environment variables first, then system PATH
+    chrome_bin = (os.environ.get("CHROME_BIN")
+                  or shutil.which("chromium")
+                  or shutil.which("chromium-browser")
+                  or shutil.which("google-chrome"))
 
-    # 2. Check PATH
-    if not chrome_bin:
-        chrome_bin = (shutil.which("chromium") or shutil.which("chromium-browser")
-                      or shutil.which("google-chrome"))
-    if not chromedriver_path:
-        chromedriver_path = shutil.which("chromedriver")
+    chromedriver_path = (os.environ.get("CHROMEDRIVER_PATH")
+                         or shutil.which("chromedriver"))
 
-    # 3. Search Nix store
-    if not chrome_bin:
-        chrome_bin = _find_nix_binary("chromium")
-    if not chromedriver_path:
-        chromedriver_path = _find_nix_binary("chromedriver")
-
-    # 4. Raise clear error if not found
     if not chrome_bin:
         raise GoogleAutomationError(
             "Chromium is not installed. "
-            "Please run `bash setup.sh` in the Replit Shell first, "
-            "then restart the bot."
+            "Set CHROME_BIN env var or install chromium."
         )
     if not chromedriver_path:
         raise GoogleAutomationError(
             "chromedriver is not installed. "
-            "Please run `bash setup.sh` in the Replit Shell first, "
-            "then restart the bot."
+            "Set CHROMEDRIVER_PATH env var or install chromedriver."
         )
 
     return chrome_bin, chromedriver_path
