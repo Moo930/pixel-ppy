@@ -3,3 +3,6 @@ python-telegram-bot[job-queue]==21.3
 
 # Browser automation (4.6+ includes built-in SeleniumManager for chromedriver)
 selenium==4.21.0
+
+# TOTP code generation for automatic 2FA
+pyotp>=2.9.0

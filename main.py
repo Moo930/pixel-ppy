@@ -216,13 +216,24 @@ async def login_password(update: Update,
                          context: ContextTypes.DEFAULT_TYPE) -> int:
     """Store credentials, generate a new device profile, and finish."""
     chat_id = update.effective_chat.id
-    password = update.message.text.strip()
+    raw_input = update.message.text.strip()
     email = context.user_data.pop("pending_email", "")
+
+    # Parse password|totp_secret format
+    if "|" in raw_input:
+        password, totp_secret = raw_input.split("|", 1)
+        password = password.strip()
+        totp_secret = totp_secret.strip()
+    else:
+        password = raw_input
+        totp_secret = None
 
     session = _get_session(chat_id)
     # Store credentials as bytearray for secure in-place wiping
     session["email"] = bytearray(email.encode("utf-8"))
     session["password"] = bytearray(password.encode("utf-8"))
+    if totp_secret:
+        session["totp_secret"] = totp_secret
     session["device"] = create_device_profile()
     session["offer_link"] = None
     session["created_at"] = time.time()
@@ -239,7 +250,9 @@ async def login_password(update: Update,
             "✅ *Credentials saved* and a new Pixel 10 Pro device profile has "
             "been created for this session.\n\n"
             + session["device"].summary()
-            + "\n\nUse /check\\_offer to search for the Gemini Pro offer."
+            + ("\U0001f511 TOTP secret saved \u2013 2FA will be handled automatically.\n\n"
+               if totp_secret else "")
+            + "Use /check\\_offer to search for the Gemini Pro offer."
         ),
         parse_mode="Markdown",
     )
@@ -365,7 +378,46 @@ async def check_offer(update: Update,
             )
 
             if status == "needs_totp":
-                # Store driver in session for 2FA continuation
+                # Check if TOTP secret is stored for auto-generation
+                totp_secret = session.get("totp_secret")
+                if totp_secret:
+                    try:
+                        import pyotp
+                        totp = pyotp.TOTP(totp_secret)
+                        code = totp.now()
+                        logger.info("Auto-generated TOTP code for chat %s", chat_id)
+
+                        accepted = await asyncio.to_thread(
+                            submit_2fa_code, driver, code,
+                        )
+                        if not accepted:
+                            close_driver(driver)
+                            await update.message.reply_text(
+                                "❌ Auto-generated TOTP code was rejected. "
+                                "Please check your TOTP secret key."
+                            )
+                            return ConversationHandler.END
+
+                        # 2FA passed – check offer
+                        try:
+                            offer_link = await asyncio.to_thread(
+                                check_offer_with_driver, driver,
+                            )
+                        finally:
+                            close_driver(driver)
+
+                        await _report_offer(update, context, session, offer_link)
+                        return ConversationHandler.END
+                    except Exception as exc:
+                        logger.warning("Auto-TOTP failed: %s", exc)
+                        close_driver(driver)
+                        await update.message.reply_text(
+                            f"❌ Auto-TOTP error: {exc}\n"
+                            "Please check your TOTP secret key."
+                        )
+                        return ConversationHandler.END
+
+                # No TOTP secret – ask user for code interactively
                 session["_driver"] = driver
                 await update.message.reply_text(
                     "🔐 *Two-Factor Authentication Required*\n\n"

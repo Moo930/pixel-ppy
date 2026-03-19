@@ -150,7 +150,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
     try:
         driver.implicitly_wait(0)  # Prevent find_element from blocking
         driver.get(config.GMAIL_LOGIN_URL)
-        time.sleep(1)
+        time.sleep(2)  # Wait for page to fully load (1s causes stale element)
 
         # ── Email step ────────────────────────────────────────────────────────
         email_field = _wait_for(driver, By.CSS_SELECTOR,
