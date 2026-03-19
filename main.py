@@ -282,16 +282,22 @@ async def _report_offer(update_or_chat_id, context, session, offer_link) -> None
                else update_or_chat_id.effective_chat.id)
     if offer_link:
         session["offer_link"] = offer_link
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "🎉 *Gemini Pro Offer Found!*\n\n"
-                "Click the link below to activate your 12-month free Gemini Pro:\n\n"
-                f"🔗 {offer_link}\n\n"
-                "_Use /get\\_link to retrieve this link again._"
-            ),
-            parse_mode="Markdown",
+        text = (
+            "🎉 <b>Gemini Pro Offer Found!</b>\n\n"
+            "Click the link below to activate your 12-month free Gemini Pro:\n\n"
+            f"🔗 {offer_link}\n\n"
+            "Use /get_link to retrieve this link again."
         )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id, text=text, parse_mode="HTML",
+            )
+        except Exception:
+            # Fallback: send without formatting
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🎉 Gemini Pro Offer Found!\n\n🔗 {offer_link}\n\nUse /get_link to retrieve this link again.",
+            )
     else:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -493,8 +499,8 @@ async def get_link(update: Update,
 
     if link:
         await update.message.reply_text(
-            f"🔗 *Last captured offer link:*\n\n{link}",
-            parse_mode="Markdown",
+            f"🔗 <b>Last captured offer link:</b>\n\n{link}",
+            parse_mode="HTML",
         )
     else:
         await update.message.reply_text(
@@ -582,14 +588,31 @@ def main() -> None:
     )
 
     # /check_offer conversation (handles 2FA)
+    async def _offer_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle conversation timeout – clean up driver."""
+        if update and update.effective_chat:
+            chat_id = update.effective_chat.id
+            session = SESSION_STORE.get(chat_id, {})
+            driver = session.pop("_driver", None)
+            close_driver(driver)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⏰ 2FA verification timed out. Please run /check_offer again.",
+            )
+        return ConversationHandler.END
+
     offer_conv = ConversationHandler(
         entry_points=[CommandHandler("check_offer", check_offer)],
         states={
             AWAIT_2FA_CODE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_2fa_code)
             ],
+            ConversationHandler.TIMEOUT: [
+                MessageHandler(filters.ALL, _offer_timeout)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel_2fa)],
+        conversation_timeout=120,  # 2 minutes to enter 2FA code
     )
 
     app.add_handler(CommandHandler("start", start))
