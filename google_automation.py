@@ -621,7 +621,7 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
         except Exception:
             continue
 
-    # -- Strategy 2: anchor text / aria-label match (skip LOCKED URLs) ---------
+    # -- Strategy 2: anchor text / aria-label match → only partner-eft-onboard --
     keywords = config.GEMINI_OFFER_KEYWORDS
     for link in all_links:
         try:
@@ -629,24 +629,18 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
             href = link.get_attribute("href") or ""
             if "LOCKED" in href:
                 continue  # Skip LOCKED URLs
-            if any(kw in text for kw in keywords) and _is_valid_offer_url(href):
-                logger.info("Found offer link via text match: %s", href)
+            if any(kw in text for kw in keywords) and _is_correct_offer_url(href):
+                logger.info("Found partner-eft-onboard link via text match: %s", href)
                 return href
         except Exception:
             continue
 
-    # -- Strategy 3: URL pattern scan (skip LOCKED URLs) -----------------------
-    url_patterns = re.compile(
-        r"(gemini|upgrade|activate|offer|redeem|trial|checkout)",
-        re.IGNORECASE,
-    )
+    # -- Strategy 3: broad URL scan → only return partner-eft-onboard ----------
     for link in all_links:
         try:
             href = link.get_attribute("href") or ""
-            if "LOCKED" in href:
-                continue
-            if url_patterns.search(href) and _is_valid_offer_url(href):
-                logger.info("Found offer link via URL pattern: %s", href)
+            if _is_correct_offer_url(href):
+                logger.info("Found partner-eft-onboard link via broad scan: %s", href)
                 return href
         except Exception:
             continue
