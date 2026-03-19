@@ -585,6 +585,7 @@ def main() -> None:
             ],
         },
         fallbacks=[CommandHandler("cancel", login_cancel)],
+        allow_reentry=True,
     )
 
     # /check_offer conversation (handles 2FA)
@@ -612,6 +613,7 @@ def main() -> None:
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel_2fa)],
+        allow_reentry=True,
         conversation_timeout=120,  # 2 minutes to enter 2FA code
     )
 
