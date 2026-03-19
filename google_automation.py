@@ -191,11 +191,78 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
 
             # TOTP / Authenticator → can be handled interactively
             if "authenticator" in page_text or "verification code" in page_text \
-                    or "enter the code" in page_text or "6-digit" in page_text:
+                    or "enter the code" in page_text or "6-digit" in page_text \
+                    or "totppin" in page_text:
                 logger.info("TOTP 2FA detected for %s – awaiting code", email)
                 return "needs_totp"
 
-            # Other 2FA types → cannot handle, raise error
+            # Not showing TOTP directly – try clicking "Try another way"
+            _try_another_selectors = (
+                '[data-challengetype]',           # General challenge selector
+                'button:has-text("Try another way")',
+                'a:has-text("Try another way")',
+            )
+            switched_to_totp = False
+
+            # Find and click "Try another way" link/button
+            try:
+                try_another = None
+                for selector in (
+                    '//a[contains(text(), "another way")]',
+                    '//button[contains(text(), "another way")]',
+                    '//a[contains(text(), "other way")]',
+                    '//a[contains(text(), "Try another")]',
+                    '//span[contains(text(), "another way")]/ancestor::a',
+                    '//span[contains(text(), "another way")]/ancestor::button',
+                ):
+                    try:
+                        try_another = driver.find_element(By.XPATH, selector)
+                        if try_another:
+                            break
+                    except NoSuchElementException:
+                        continue
+
+                if try_another:
+                    try_another.click()
+                    time.sleep(2)
+                    logger.info("Clicked 'Try another way' for %s", email)
+
+                    # Now look for authenticator / TOTP option in the list
+                    for opt_xpath in (
+                        '//div[contains(text(), "authenticator")]',
+                        '//div[contains(text(), "Authenticator")]',
+                        '//div[contains(text(), "verification code")]',
+                        '//div[contains(text(), "Google Authenticator")]',
+                        '//li[contains(., "authenticator")]',
+                        '//li[contains(., "Authenticator")]',
+                        '//div[@data-challengetype="6"]',  # TOTP challenge type
+                        '//*[@data-challengetype="6"]',
+                    ):
+                        try:
+                            opt = driver.find_element(By.XPATH, opt_xpath)
+                            opt.click()
+                            time.sleep(2)
+                            switched_to_totp = True
+                            logger.info("Selected authenticator option for %s", email)
+                            break
+                        except NoSuchElementException:
+                            continue
+
+                    if switched_to_totp:
+                        return "needs_totp"
+
+                    # Check if the page now shows TOTP after clicking
+                    page_text = driver.page_source.lower()
+                    if "authenticator" in page_text or "verification code" in page_text \
+                            or "enter the code" in page_text or "6-digit" in page_text \
+                            or "totppin" in page_text:
+                        return "needs_totp"
+
+            except Exception as exc:
+                logger.warning("Error trying alternative 2FA: %s", exc)
+
+            # No TOTP option found → raise error
+            page_text = driver.page_source.lower()
             if "security key" in page_text or "usb" in page_text:
                 challenge_type = "security key"
             elif "phone" in page_text or "sms" in page_text:
@@ -211,7 +278,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
             )
             raise GoogleAutomationError(
                 f"Your account requires {challenge_type}. "
-                f"This bot cannot handle this type. "
+                f"No authenticator option found. "
                 f"Please use an App Password instead."
             )
 
