@@ -205,6 +205,75 @@ class DeviceProfile:
             get: () => ['{self.locale}', 'en']
         }});
 
+        // ── navigator.userAgentData (critical for Google device checks) ──
+        Object.defineProperty(navigator, 'userAgentData', {{
+            get: () => ({{
+                brands: [
+                    {{ brand: "Chromium", version: "{config.CHROME_MAJOR_VERSION}" }},
+                    {{ brand: "Google Chrome", version: "{config.CHROME_MAJOR_VERSION}" }},
+                    {{ brand: "Not:A-Brand", version: "24" }},
+                ],
+                mobile: true,
+                platform: "Android",
+                getHighEntropyValues: (hints) => Promise.resolve({{
+                    brands: [
+                        {{ brand: "Chromium", version: "{config.CHROME_MAJOR_VERSION}" }},
+                        {{ brand: "Google Chrome", version: "{config.CHROME_MAJOR_VERSION}" }},
+                        {{ brand: "Not:A-Brand", version: "24" }},
+                    ],
+                    mobile: true,
+                    platform: "Android",
+                    platformVersion: "{self.android_version}.0.0",
+                    architecture: "",
+                    bitness: "64",
+                    model: "{self.model}",
+                    uaFullVersion: "{self.chrome_version}",
+                    fullVersionList: [
+                        {{ brand: "Chromium", version: "{self.chrome_version}" }},
+                        {{ brand: "Google Chrome", version: "{self.chrome_version}" }},
+                        {{ brand: "Not:A-Brand", version: "24.0.0.0" }},
+                    ],
+                }}),
+                toJSON: () => ({{
+                    brands: [
+                        {{ brand: "Chromium", version: "{config.CHROME_MAJOR_VERSION}" }},
+                        {{ brand: "Google Chrome", version: "{config.CHROME_MAJOR_VERSION}" }},
+                        {{ brand: "Not:A-Brand", version: "24" }},
+                    ],
+                    mobile: true,
+                    platform: "Android",
+                }}),
+            }})
+        }});
+
+        // ── Screen orientation (mobile = portrait) ──
+        Object.defineProperty(screen, 'orientation', {{
+            get: () => ({{
+                type: 'portrait-primary',
+                angle: 0,
+                addEventListener: () => {{}},
+                removeEventListener: () => {{}},
+                dispatchEvent: () => true,
+                onchange: null,
+                lock: () => Promise.resolve(),
+                unlock: () => {{}},
+            }})
+        }});
+
+        // ── Vibration API (mobile-only) ──
+        navigator.vibrate = () => true;
+
+        // ── MediaDevices (camera + mic = real phone) ──
+        if (navigator.mediaDevices) {{
+            const origEnum = navigator.mediaDevices.enumerateDevices;
+            navigator.mediaDevices.enumerateDevices = () => Promise.resolve([
+                {{ deviceId: 'default', groupId: 'g1', kind: 'audioinput', label: '' }},
+                {{ deviceId: 'cam0', groupId: 'g2', kind: 'videoinput', label: '' }},
+                {{ deviceId: 'cam1', groupId: 'g3', kind: 'videoinput', label: '' }},
+                {{ deviceId: 'default', groupId: 'g4', kind: 'audiooutput', label: '' }},
+            ]);
+        }}
+
         // ── connection API ──
         if (navigator.connection) {{
             Object.defineProperty(navigator.connection, 'effectiveType', {{
