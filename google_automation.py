@@ -24,7 +24,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
 
 import config
 from device_simulator import DeviceProfile
@@ -62,8 +61,19 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("--disable-blink-features=AutomationControlled")
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    # Use Selenium's built-in driver manager (Selenium 4.6+)
+    # This avoids webdriver-manager's Chrome version detection issues
+    try:
+        driver = webdriver.Chrome(options=options)
+    except Exception:
+        # Fallback: try with explicit Service using shutil to find chromedriver
+        import shutil
+        chromedriver_path = shutil.which("chromedriver")
+        if chromedriver_path:
+            service = Service(chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=options)
+        else:
+            raise
     driver.implicitly_wait(config.IMPLICIT_WAIT)
     driver.set_page_load_timeout(config.PAGE_LOAD_TIMEOUT)
     return driver

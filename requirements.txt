@@ -1,8 +1,5 @@
 # Core bot framework
 python-telegram-bot==21.3
 
-# Browser automation
+# Browser automation (4.6+ includes built-in SeleniumManager for chromedriver)
 selenium==4.21.0
-
-# WebDriver management (auto-downloads matching chromedriver)
-webdriver-manager==4.0.1
