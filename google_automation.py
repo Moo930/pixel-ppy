@@ -58,6 +58,11 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     if chrome_bin:
         options.binary_location = chrome_bin
         logger.info("Using Chrome binary: %s", chrome_bin)
+    else:
+        logger.warning(
+            "No Chrome/Chromium binary found. Set CHROME_BIN env var "
+            "or install chromium via your system package manager."
+        )
 
     # Mobile emulation – Pixel 10 Pro viewport
     mobile_emulation = {
@@ -76,10 +81,14 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
         or shutil.which("chromedriver")
 
     if chromedriver_path:
+        logger.info("Using chromedriver: %s", chromedriver_path)
         service = Service(chromedriver_path)
         driver = webdriver.Chrome(service=service, options=options)
     else:
-        # Let Selenium's built-in SeleniumManager find it
+        logger.warning(
+            "No chromedriver found via CHROMEDRIVER_PATH or PATH. "
+            "Falling back to Selenium's built-in manager."
+        )
         driver = webdriver.Chrome(options=options)
 
     driver.implicitly_wait(config.IMPLICIT_WAIT)
