@@ -454,11 +454,20 @@ async def check_offer(update: Update,
                     )
                     break
 
-                # Offer not found – log and retry
+                # Offer not found – log and wait before retrying
                 logger.info(
                     "No offer found on attempt %d/%d for chat %s",
                     attempt, _MAX_OFFER_ATTEMPTS, chat_id,
                 )
+
+                # Wait before next attempt to avoid rate-limiting
+                if attempt < _MAX_OFFER_ATTEMPTS:
+                    import random as _rand
+                    delay = _rand.randint(15, 30)
+                    await update.message.reply_text(
+                        f"⏳ 未检测到优惠，{delay} 秒后开始第 {attempt + 1} 次尝试…"
+                    )
+                    await asyncio.sleep(delay)
 
     except GoogleAutomationError as exc:
         await update.message.reply_text(f"❌ <b>Error:</b> {exc}", parse_mode="HTML")
