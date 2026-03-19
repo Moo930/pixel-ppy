@@ -16,4 +16,4 @@ services:
           cpus: "1.5"
         reservations:
           memory: 512M
-    shm_size: "256m"  # Shared memory for Chrome headless
+    shm_size: "512m"  # Shared memory for Chrome headless (needs more for JS injection)

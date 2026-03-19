@@ -16,6 +16,7 @@ from typing import Optional
 from selenium import webdriver
 from selenium.common.exceptions import (
     NoSuchElementException,
+    StaleElementReferenceException,
     TimeoutException,
     WebDriverException,
 )
@@ -202,13 +203,22 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
     try:
         driver.implicitly_wait(0)  # Prevent find_element from blocking
         driver.get(config.GMAIL_LOGIN_URL)
-        time.sleep(2)  # Wait for page to fully load (1s causes stale element)
+        time.sleep(3)  # Wait for page + injected JS to fully settle
 
         # ── Email step ────────────────────────────────────────────────────────
-        email_field = _wait_for(driver, By.CSS_SELECTOR,
-                                'input[type="email"]')
-        email_field.clear()
-        email_field.send_keys(email)
+        # Retry up to 3 times to handle stale element from JS injection
+        for _retry in range(3):
+            try:
+                email_field = _wait_for(driver, By.CSS_SELECTOR,
+                                        'input[type="email"]')
+                email_field.clear()
+                email_field.send_keys(email)
+                break
+            except StaleElementReferenceException:
+                logger.warning("Stale element on email field, retrying (%d/3)", _retry + 1)
+                time.sleep(1)
+        else:
+            raise GoogleAutomationError("Email field stale after 3 retries")
 
         next_btn = _wait_for(driver, By.ID, "identifierNext")
         next_btn.click()
