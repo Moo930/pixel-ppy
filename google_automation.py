@@ -190,11 +190,23 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
         ):
             page_text = driver.page_source.lower()
 
-            # TOTP / Authenticator → can be handled interactively
-            if "authenticator" in page_text or "verification code" in page_text \
-                    or "enter the code" in page_text or "6-digit" in page_text \
-                    or "totppin" in page_text:
-                logger.info("TOTP 2FA detected for %s – awaiting code", email)
+            # TOTP / Authenticator → check if the input field is actually present
+            _totp_input_selectors = (
+                'input[type="tel"]',
+                'input[name="totpPin"]',
+                '#totpPin',
+            )
+            has_totp_input = False
+            for sel in _totp_input_selectors:
+                try:
+                    driver.find_element(By.CSS_SELECTOR, sel)
+                    has_totp_input = True
+                    break
+                except NoSuchElementException:
+                    continue
+
+            if has_totp_input:
+                logger.info("TOTP 2FA input field found for %s – awaiting code", email)
                 return "needs_totp"
 
             # Not showing TOTP directly – try clicking "Try another way"
