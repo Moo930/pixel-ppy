@@ -490,22 +490,71 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
     """
     keywords = config.GEMINI_OFFER_KEYWORDS
 
+    # ── Page content validation keywords ────────────────────────────────────
+    # These must be present on the real Gemini Pro claim/trial page
+    # (from reference: gift box screen → "start trial" → subscription)
+    _OFFER_PAGE_KEYWORDS = [
+        "ai premium",
+        "gemini advanced",
+        "gemini pro",
+        "12 month",
+        "12-month",
+        "start free trial",
+        "start trial",
+        "subscribe",
+        "free trial",
+        "pixel",
+        "google one ai",
+        "premium plan",
+    ]
+
+    def _page_has_offer_content(page_text: str) -> bool:
+        """Check if page text contains at least 2 offer-related keywords."""
+        text = page_text.lower()
+        matches = sum(1 for kw in _OFFER_PAGE_KEYWORDS if kw in text)
+        return matches >= 2
+
     # -- Strategy 0: Click LOCKED benefit to navigate to claim page -----------
     # The LOCKED:BARD_ADVANCED_MODE link IS the Pixel Gemini Pro offer.
-    # Clicking it opens the gift box / claim page.
+    # Clicking it should open the gift box / claim page.
     all_links = driver.find_elements(By.TAG_NAME, "a")
     for link in all_links:
         try:
             href = link.get_attribute("href") or ""
             if "LOCKED" in href and "BARD_ADVANCED" in href:
-                logger.info("Found Pixel Gemini Pro offer: %s", href)
+                logger.info("Found LOCKED benefit link: %s", href)
+                old_url = driver.current_url
                 link.click()
-                time.sleep(3)
-                # Return the claim page URL (this is the gift box screen)
+                time.sleep(4)
+
                 current_url = driver.current_url
-                logger.info("Offer claim page URL: %s", current_url)
-                return current_url
-        except Exception:
+                page_text = driver.page_source
+
+                # Validate: did the page change and does it show offer content?
+                if current_url != old_url and _page_has_offer_content(page_text):
+                    logger.info("✅ Offer claim page validated: %s", current_url)
+                    return current_url
+
+                # Page changed but content doesn't match
+                if current_url != old_url:
+                    logger.info(
+                        "Page navigated to %s but content doesn't match offer page",
+                        current_url,
+                    )
+                    # Still check if this new page has valid content
+                    if _page_has_offer_content(page_text):
+                        logger.info("✅ Offer content found on navigated page")
+                        return current_url
+
+                # Page didn't change - click may have failed
+                logger.warning(
+                    "LOCKED link click did not navigate away (still %s). "
+                    "Device may not qualify.",
+                    current_url,
+                )
+                return None  # Return None to trigger retry with new device
+        except Exception as exc:
+            logger.warning("Error clicking LOCKED link: %s", exc)
             continue
 
     # -- Strategy 1: anchor text / aria-label match ---------------------------
