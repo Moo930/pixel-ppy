@@ -424,7 +424,13 @@ def _is_valid_offer_url(href: str) -> bool:
     """Return True if *href* belongs to a whitelisted offer domain.
 
     When ``config.OFFER_DOMAIN_WHITELIST`` is empty every URL is accepted.
+    Rejects URLs containing 'LOCKED' (benefit listing pages, not claim links).
     """
+    if not href:
+        return False
+    # Reject LOCKED benefit URLs – these are listing pages, not claim links
+    if "LOCKED" in href:
+        return False
     whitelist = config.OFFER_DOMAIN_WHITELIST
     if not whitelist:
         return bool(href)
@@ -452,8 +458,29 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
     """
     keywords = config.GEMINI_OFFER_KEYWORDS
 
-    # -- Strategy 1: anchor text / aria-label match ---------------------------
+    # -- Strategy 0: Click LOCKED benefit to navigate to claim page -----------
+    # If the page has a LOCKED benefit link, click it to reach the actual
+    # activation/claim page, then extract the real offer link.
     all_links = driver.find_elements(By.TAG_NAME, "a")
+    for link in all_links:
+        try:
+            href = link.get_attribute("href") or ""
+            if "LOCKED" in href and "BARD_ADVANCED" in href:
+                logger.info("Clicking LOCKED benefit link to navigate: %s", href)
+                link.click()
+                time.sleep(3)
+                # After clicking, re-scan for the real offer link
+                current_url = driver.current_url
+                if _is_valid_offer_url(current_url):
+                    logger.info("Navigated to offer page: %s", current_url)
+                    return current_url
+                # Re-scan links on the new page
+                all_links = driver.find_elements(By.TAG_NAME, "a")
+                break
+        except Exception:
+            continue
+
+    # -- Strategy 1: anchor text / aria-label match ---------------------------
     for link in all_links:
         try:
             text = (link.text + " " + (link.get_attribute("aria-label") or "")).lower()
