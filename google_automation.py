@@ -148,8 +148,9 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
     Raises GoogleAutomationError for unsupported 2FA types.
     """
     try:
+        driver.implicitly_wait(0)  # Prevent find_element from blocking
         driver.get(config.GMAIL_LOGIN_URL)
-        time.sleep(2)
+        time.sleep(1)
 
         # ── Email step ────────────────────────────────────────────────────────
         email_field = _wait_for(driver, By.CSS_SELECTOR,
@@ -159,7 +160,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
 
         next_btn = _wait_for(driver, By.ID, "identifierNext")
         next_btn.click()
-        time.sleep(2)
+        time.sleep(1)
 
         # ── Password step ─────────────────────────────────────────────────────
         password_field = _wait_for(driver, By.CSS_SELECTOR,
@@ -169,7 +170,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
 
         pw_next = _wait_for(driver, By.ID, "passwordNext")
         pw_next.click()
-        time.sleep(3)
+        time.sleep(2)
 
         # ── Detect 2FA / verification challenges ─────────────────────────────
         current_url = driver.current_url
@@ -224,24 +225,24 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
 
                 if try_another:
                     try_another.click()
-                    time.sleep(2)
+                    time.sleep(1)
                     logger.info("Clicked 'Try another way' for %s", email)
 
                     # Now look for authenticator / TOTP option in the list
+                    # Most likely selectors first for speed
                     for opt_xpath in (
-                        '//div[contains(text(), "authenticator")]',
+                        '//*[@data-challengetype="6"]',    # TOTP challenge type
+                        '//div[@data-challengetype="6"]',
                         '//div[contains(text(), "Authenticator")]',
-                        '//div[contains(text(), "verification code")]',
+                        '//div[contains(text(), "authenticator")]',
                         '//div[contains(text(), "Google Authenticator")]',
-                        '//li[contains(., "authenticator")]',
+                        '//div[contains(text(), "verification code")]',
                         '//li[contains(., "Authenticator")]',
-                        '//div[@data-challengetype="6"]',  # TOTP challenge type
-                        '//*[@data-challengetype="6"]',
                     ):
                         try:
                             opt = driver.find_element(By.XPATH, opt_xpath)
                             opt.click()
-                            time.sleep(2)
+                            time.sleep(1)
                             switched_to_totp = True
                             logger.info("Selected authenticator option for %s", email)
                             break
@@ -332,12 +333,11 @@ def _submit_totp_code(driver: webdriver.Chrome, code: str) -> bool:
         for selector in (
             'input[type="tel"]',           # Most common – numeric input
             'input[name="totpPin"]',       # Direct name
-            'input[id="totpPin"]',         # Direct ID
             '#totpPin',
             'input[type="text"]',          # Fallback
         ):
             try:
-                totp_field = WebDriverWait(driver, 5).until(
+                totp_field = WebDriverWait(driver, 2).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                 )
                 if totp_field:
@@ -351,7 +351,7 @@ def _submit_totp_code(driver: webdriver.Chrome, code: str) -> bool:
 
         totp_field.clear()
         totp_field.send_keys(code)
-        time.sleep(1)
+        time.sleep(0.5)
 
         # Click Next / Verify button
         for btn_selector in (
@@ -367,7 +367,7 @@ def _submit_totp_code(driver: webdriver.Chrome, code: str) -> bool:
             except NoSuchElementException:
                 continue
 
-        time.sleep(3)
+        time.sleep(2)
 
         # Check if we left the challenge page
         current_url = driver.current_url
