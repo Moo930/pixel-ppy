@@ -46,8 +46,8 @@ AWAIT_EMAIL, AWAIT_PASSWORD = range(2)
 _LAST_CHECK_TIME: dict[int, float] = {}
 CHECK_OFFER_COOLDOWN = 5 * 60  # 5 minutes between checks per user
 
-# Limit the number of simultaneous Chrome instances
-_CHROME_SEMAPHORE = asyncio.Semaphore(3)
+# Limit the number of simultaneous Chrome instances (1 for ≤4GB RAM servers)
+_CHROME_SEMAPHORE = asyncio.Semaphore(1)
 
 # ── Session storage ───────────────────────────────────────────────────────────
 # In-memory dict keyed by Telegram chat_id.

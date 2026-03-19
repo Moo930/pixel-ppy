@@ -8,3 +8,12 @@ services:
       - HEADLESS=true
     volumes:
       - ./logs:/app/logs
+    # Resource limits for 2.5GB RAM / 2 CPU servers
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+          cpus: "1.5"
+        reservations:
+          memory: 512M
+    shm_size: "256m"  # Shared memory for Chrome headless
