@@ -2,7 +2,7 @@ services:
   pixel-ppy:
     build: .
     container_name: pixel-ppy
-    restart: unless-stopped
+    restart: on-failure:3
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - HEADLESS=true

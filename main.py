@@ -41,7 +41,30 @@ from google_automation import (
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
+from logging.handlers import RotatingFileHandler
+
+_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+
+_formatter = logging.Formatter(config.LOG_FORMAT)
+
+# Console handler
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_formatter)
+
+# File handler (5 MB per file, keep 3 backups)
+_file_handler = RotatingFileHandler(
+    os.path.join(_LOG_DIR, "bot.log"),
+    maxBytes=5 * 1024 * 1024,
+    backupCount=3,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(_formatter)
+
+logging.basicConfig(
+    level=config.LOG_LEVEL,
+    handlers=[_console_handler, _file_handler],
+)
 logger = logging.getLogger(__name__)
 
 # ── Conversation states ───────────────────────────────────────────────────────
