@@ -73,21 +73,39 @@ nano .env
 ### 4. Build and run
 
 ```bash
-# Build image and start container (detached)
 docker compose up -d --build
-
-# View logs
-docker compose logs -f
 ```
 
 ### 5. Management commands
 
 ```bash
-docker compose down        # Stop the bot
-docker compose restart     # Restart the bot
-docker compose logs -f     # View live logs
-docker compose up -d --build  # Rebuild after code changes
+# 停止 bot
+docker compose stop
+
+# 停止并删除容器
+docker compose down
+
+# 重启
+docker compose restart
+
+# 代码更新后重新构建
+docker compose up -d --build
+
+# 查看实时日志（控制台）
+docker compose logs -f
+
+# 查看日志文件
+cat logs/bot.log
+
+# 查看最近 100 行日志
+tail -n 100 logs/bot.log
+
+# 查看容器状态
+docker compose ps
 ```
+
+> **注意**：容器使用 `restart: on-failure:3` 策略，仅在异常退出时自动重启（最多 3 次）。
+> 手动 `docker compose stop` 或 `docker compose down` 不会触发重启。
 
 ---
 
