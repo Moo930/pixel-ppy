@@ -476,23 +476,26 @@ def _is_valid_offer_url(href: str) -> bool:
         return False
 
 
+def _is_correct_offer_url(url: str) -> bool:
+    """Return True if *url* is a valid Pixel Gemini Pro offer claim URL.
+
+    The correct offer URL format is:
+        https://one.google.com/partner-eft-onboard/XXXXXXX
+    """
+    if not url:
+        return False
+    return "partner-eft-onboard" in url
+
+
 def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
     """
     Scan the current page for a Gemini Pro offer / activation link.
 
-    Strategy:
-    1. Look for anchor tags whose text or aria-label contains offer keywords.
-    2. Fall back to scanning all links for 'gemini' or 'upgrade' patterns.
-    3. Check button / CTA elements for offer text.
-
-    All strategies filter links through ``_is_valid_offer_url`` to avoid
-    false positives from generic keywords matching unrelated pages.
+    The correct offer URL contains ``partner-eft-onboard``.
+    Strategy 0 clicks the LOCKED benefit link and validates the result.
+    Strategies 1-3 only accept non-LOCKED URLs.
     """
-    keywords = config.GEMINI_OFFER_KEYWORDS
-
     # ── Page content validation keywords ────────────────────────────────────
-    # These must be present on the real Gemini Pro claim/trial page
-    # (from reference: gift box screen → "start trial" → subscription)
     _OFFER_PAGE_KEYWORDS = [
         "ai premium",
         "gemini advanced",
@@ -503,9 +506,9 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
         "start trial",
         "subscribe",
         "free trial",
-        "pixel",
         "google one ai",
         "premium plan",
+        "partner-eft-onboard",
     ]
 
     def _page_has_offer_content(page_text: str) -> bool:
@@ -515,8 +518,6 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
         return matches >= 2
 
     # -- Strategy 0: Click LOCKED benefit to navigate to claim page -----------
-    # The LOCKED:BARD_ADVANCED_MODE link IS the Pixel Gemini Pro offer.
-    # Clicking it should open the gift box / claim page.
     all_links = driver.find_elements(By.TAG_NAME, "a")
     for link in all_links:
         try:
@@ -524,51 +525,80 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
             if "LOCKED" in href and "BARD_ADVANCED" in href:
                 logger.info("Found LOCKED benefit link: %s", href)
                 old_url = driver.current_url
-                link.click()
-                time.sleep(4)
+
+                # Use JavaScript click to bypass overlay elements
+                driver.execute_script("arguments[0].click();", link)
+                time.sleep(5)
 
                 current_url = driver.current_url
-                page_text = driver.page_source
+                logger.info("After clicking LOCKED link, URL: %s", current_url)
 
-                # Validate: did the page change and does it show offer content?
-                if current_url != old_url and _page_has_offer_content(page_text):
-                    logger.info("✅ Offer claim page validated: %s", current_url)
+                # Best case: URL contains partner-eft-onboard
+                if _is_correct_offer_url(current_url):
+                    logger.info("✅ Found correct offer URL: %s", current_url)
                     return current_url
 
-                # Page changed but content doesn't match
+                # Check if page navigated and has offer content
                 if current_url != old_url:
-                    logger.info(
-                        "Page navigated to %s but content doesn't match offer page",
-                        current_url,
-                    )
-                    # Still check if this new page has valid content
+                    page_text = driver.page_source
                     if _page_has_offer_content(page_text):
-                        logger.info("✅ Offer content found on navigated page")
+                        logger.info("✅ Offer page content validated: %s", current_url)
                         return current_url
 
-                # Page didn't change - click may have failed
-                logger.warning(
-                    "LOCKED link click did not navigate away (still %s). "
-                    "Device may not qualify.",
-                    current_url,
-                )
-                return None  # Return None to trigger retry with new device
+                    # Also scan new page for partner-eft-onboard links
+                    new_links = driver.find_elements(By.TAG_NAME, "a")
+                    for nl in new_links:
+                        try:
+                            nh = nl.get_attribute("href") or ""
+                            if _is_correct_offer_url(nh):
+                                logger.info("✅ Found partner-eft-onboard link on page: %s", nh)
+                                return nh
+                        except Exception:
+                            continue
+
+                    logger.warning(
+                        "Page navigated to %s but no valid offer found",
+                        current_url,
+                    )
+                else:
+                    logger.warning(
+                        "LOCKED link click did not navigate (still %s). "
+                        "Device may not qualify.",
+                        current_url,
+                    )
+
+                # Return None to trigger retry with new device
+                return None
         except Exception as exc:
             logger.warning("Error clicking LOCKED link: %s", exc)
+            # Click failed — return None to trigger retry
+            return None
+
+    # -- Strategy 1: scan for partner-eft-onboard links directly ---------------
+    for link in all_links:
+        try:
+            href = link.get_attribute("href") or ""
+            if _is_correct_offer_url(href):
+                logger.info("Found partner-eft-onboard link: %s", href)
+                return href
+        except Exception:
             continue
 
-    # -- Strategy 1: anchor text / aria-label match ---------------------------
+    # -- Strategy 2: anchor text / aria-label match (skip LOCKED URLs) ---------
+    keywords = config.GEMINI_OFFER_KEYWORDS
     for link in all_links:
         try:
             text = (link.text + " " + (link.get_attribute("aria-label") or "")).lower()
             href = link.get_attribute("href") or ""
+            if "LOCKED" in href:
+                continue  # Skip LOCKED URLs
             if any(kw in text for kw in keywords) and _is_valid_offer_url(href):
                 logger.info("Found offer link via text match: %s", href)
                 return href
         except Exception:
             continue
 
-    # -- Strategy 2: URL pattern scan -----------------------------------------
+    # -- Strategy 3: URL pattern scan (skip LOCKED URLs) -----------------------
     url_patterns = re.compile(
         r"(gemini|upgrade|activate|offer|redeem|trial|checkout)",
         re.IGNORECASE,
@@ -576,32 +606,11 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
     for link in all_links:
         try:
             href = link.get_attribute("href") or ""
+            if "LOCKED" in href:
+                continue
             if url_patterns.search(href) and _is_valid_offer_url(href):
                 logger.info("Found offer link via URL pattern: %s", href)
                 return href
-        except Exception:
-            continue
-
-    # -- Strategy 3: button / CTA elements ------------------------------------
-    buttons = driver.find_elements(By.CSS_SELECTOR, "button, [role='button']")
-    for btn in buttons:
-        try:
-            text = btn.text.lower()
-            if any(kw in text for kw in keywords):
-                # Try to find parent anchor
-                try:
-                    parent_link = btn.find_element(By.XPATH, "ancestor::a")
-                    href = parent_link.get_attribute("href") or ""
-                    if _is_valid_offer_url(href):
-                        logger.info("Found offer link via button parent: %s", href)
-                        return href
-                except NoSuchElementException:
-                    pass
-                # Return current URL as fallback (user will land on offer page)
-                current = driver.current_url
-                if _is_valid_offer_url(current):
-                    logger.info("Found offer CTA button on page: %s", current)
-                    return current
         except Exception:
             continue
 
