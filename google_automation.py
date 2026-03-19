@@ -66,10 +66,12 @@ def _ensure_chromium_installed() -> tuple[str, str]:
 
 def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     """Return a headless Chrome WebDriver configured for the device profile."""
+    from device_simulator import PIXEL_10_PRO_SPECS as SPECS
+
     options = Options()
 
     if config.HEADLESS:
-        options.add_argument("--headless")  # Use old headless (less memory than --headless=new)
+        options.add_argument("--headless")
 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -77,7 +79,7 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-infobars")
     options.add_argument("--disable-notifications")
-    options.add_argument("--window-size=390,844")  # Pixel 10 Pro screen size
+    options.add_argument(f"--window-size={SPECS['width']},{SPECS['height']}")
     options.add_argument(f"--user-agent={profile.user_agent}")
 
     # ── Memory-saving flags for low-memory environments ─────────────────────
@@ -103,7 +105,13 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
 
     # Mobile emulation – Pixel 10 Pro viewport
     mobile_emulation = {
-        "deviceMetrics": {"width": 390, "height": 844, "pixelRatio": 3.0},
+        "deviceMetrics": {
+            "width": SPECS["width"],
+            "height": SPECS["height"],
+            "pixelRatio": SPECS["pixel_ratio"],
+            "mobile": True,
+            "touch": True,
+        },
         "userAgent": profile.user_agent,
     }
     options.add_experimental_option("mobileEmulation", mobile_emulation)
@@ -124,6 +132,34 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
 
     driver.implicitly_wait(config.IMPLICIT_WAIT)
     driver.set_page_load_timeout(config.PAGE_LOAD_TIMEOUT)
+
+    # ── Inject navigator/WebGL/screen overrides via CDP ───────────────────
+    try:
+        # Inject JS spoofs on every page load
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": profile.navigator_overrides_js()},
+        )
+
+        # Set Client Hints and device headers at network level
+        driver.execute_cdp_cmd(
+            "Network.setExtraHTTPHeaders",
+            {"headers": profile.as_headers()},
+        )
+
+        # Enable touch emulation
+        driver.execute_cdp_cmd(
+            "Emulation.setTouchEmulationEnabled",
+            {"enabled": True, "maxTouchPoints": SPECS["max_touch_points"]},
+        )
+
+        logger.info(
+            "Device emulation configured: %s (Build %s, Chrome %s)",
+            profile.model, profile.build_id, profile.chrome_version,
+        )
+    except Exception as exc:
+        logger.warning("CDP override injection failed (non-fatal): %s", exc)
+
     return driver
 
 

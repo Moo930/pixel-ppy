@@ -3,6 +3,9 @@ Android Pixel 10 Pro device simulator.
 
 Each session gets unique identifiers (IMEI, Android ID, device fingerprint,
 Chrome version patch) while the hardware identity remains "Pixel 10 Pro".
+
+Generates realistic Client Hints, WebGL overrides, and navigator properties
+so that Google's Pixel-benefit eligibility checks pass.
 """
 
 import random
@@ -10,6 +13,7 @@ import string
 import uuid
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import config
 
@@ -29,9 +33,9 @@ def _luhn_checksum(number: str) -> int:
 
 def _generate_imei() -> str:
     """Generate a syntactically valid IMEI (15 digits, Luhn-valid)."""
-    # TAC prefix for a generic Android device
-    tac = "35" + "".join(random.choices(string.digits, k=6))
-    serial = "".join(random.choices(string.digits, k=6))
+    # TAC prefix for Google Pixel devices
+    tac = random.choice(["35847631", "35900012", "35250011", "86893003"])
+    serial = "".join(random.choices(string.digits, k=15 - len(tac) - 1))
     partial = tac + serial
     check_digit = (10 - _luhn_checksum(partial + "0")) % 10
     return partial + str(check_digit)
@@ -42,12 +46,13 @@ def _generate_android_id() -> str:
     return "".join(random.choices("0123456789abcdef", k=16))
 
 
-def _generate_device_fingerprint(model: str, build_id: str, android: str) -> str:
+def _generate_device_fingerprint(model: str, build_id: str,
+                                  android: str) -> str:
     """Return a realistic Android build fingerprint."""
     return (
         f"google/{model.lower().replace(' ', '_')}/"
         f"{model.lower().replace(' ', '_')}:{android}/"
-        f"{build_id}/eng.user.release-keys"
+        f"{build_id}/eng.{random.randint(10000000, 99999999)}:user/release-keys"
     )
 
 
@@ -58,6 +63,51 @@ def _random_chrome_patch() -> str:
     build = random.randint(6360, 6380)
     patch = random.randint(70, 100)
     return f"{major}.{minor}.{build}.{patch}"
+
+
+def _random_build_id() -> str:
+    """Pick a realistic BUILD_ID from a pool of known Pixel 10 Pro builds."""
+    builds = [
+        "AP4A.250405.002",
+        "AP4A.250305.001",
+        "AP4A.250205.004",
+        "AP3A.250105.002",
+        "AP3A.241205.015",
+    ]
+    return random.choice(builds)
+
+
+# ── Pixel 10 Pro hardware constants ──────────────────────────────────────────
+# These match the actual Pixel 10 Pro specs
+
+PIXEL_10_PRO_SPECS = {
+    # Screen
+    "width": 412,            # CSS viewport width
+    "height": 915,           # CSS viewport height
+    "device_width": 1080,    # Physical resolution width
+    "device_height": 2400,   # Physical resolution height
+    "pixel_ratio": 2.625,    # Device pixel ratio
+
+    # GPU (Tensor G5)
+    "webgl_vendor": "Qualcomm",
+    "webgl_renderer": "Adreno (TM) 750",
+
+    # Platform
+    "platform": "Linux armv8l",
+    "vendor": "Google Inc.",
+
+    # Connection
+    "connection_type": "4g",
+    "effective_type": "4g",
+    "downlink": 10,
+
+    # Touch
+    "max_touch_points": 5,
+
+    # Memory (GB exposed to JS)
+    "device_memory": 12,
+    "hardware_concurrency": 8,
+}
 
 
 # ── Device profile dataclass ──────────────────────────────────────────────────
@@ -79,25 +129,137 @@ class DeviceProfile:
     android_sdk: str = config.ANDROID_SDK
     build_id: str = config.BUILD_ID
 
+    # Accept-Language for US English (most Pixel offers are US)
+    accept_language: str = "en-US,en;q=0.9"
+
+    # Locale
+    locale: str = "en-US"
+
+    def client_hints_headers(self) -> dict:
+        """Return User-Agent Client Hints headers for this device.
+
+        Google relies on Sec-CH-UA-* headers to verify the device brand,
+        model and platform.  Without these, the server may treat the
+        request as a generic desktop browser.
+        """
+        return {
+            "Sec-CH-UA": (
+                f'"Chromium";v="{config.CHROME_MAJOR_VERSION}", '
+                f'"Google Chrome";v="{config.CHROME_MAJOR_VERSION}", '
+                f'"Not:A-Brand";v="24"'
+            ),
+            "Sec-CH-UA-Mobile": "?1",
+            "Sec-CH-UA-Platform": '"Android"',
+            "Sec-CH-UA-Platform-Version": f'"{self.android_version}.0.0"',
+            "Sec-CH-UA-Model": f'"{self.model}"',
+            "Sec-CH-UA-Full-Version": f'"{self.chrome_version}"',
+            "Sec-CH-UA-Full-Version-List": (
+                f'"Chromium";v="{self.chrome_version}", '
+                f'"Google Chrome";v="{self.chrome_version}", '
+                f'"Not:A-Brand";v="24.0.0.0"'
+            ),
+            "Sec-CH-UA-Arch": '""',
+            "Sec-CH-UA-Bitness": '"64"',
+        }
+
     def as_headers(self) -> dict:
         """Return HTTP headers that identify this device."""
-        return {
+        headers = {
             "User-Agent": self.user_agent,
-            "X-Device-Model": self.model,
-            "X-Android-ID": self.android_id,
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": self.accept_language,
             "Accept-Encoding": "gzip, deflate, br",
         }
+        headers.update(self.client_hints_headers())
+        return headers
+
+    def navigator_overrides_js(self) -> str:
+        """Return JavaScript to inject navigator/screen spoofs via CDP."""
+        specs = PIXEL_10_PRO_SPECS
+        return f"""
+        // ── navigator overrides ──
+        Object.defineProperty(navigator, 'platform', {{
+            get: () => '{specs["platform"]}'
+        }});
+        Object.defineProperty(navigator, 'vendor', {{
+            get: () => '{specs["vendor"]}'
+        }});
+        Object.defineProperty(navigator, 'maxTouchPoints', {{
+            get: () => {specs["max_touch_points"]}
+        }});
+        Object.defineProperty(navigator, 'hardwareConcurrency', {{
+            get: () => {specs["hardware_concurrency"]}
+        }});
+        Object.defineProperty(navigator, 'deviceMemory', {{
+            get: () => {specs["device_memory"]}
+        }});
+        Object.defineProperty(navigator, 'language', {{
+            get: () => '{self.locale}'
+        }});
+        Object.defineProperty(navigator, 'languages', {{
+            get: () => ['{self.locale}', 'en']
+        }});
+
+        // ── connection API ──
+        if (navigator.connection) {{
+            Object.defineProperty(navigator.connection, 'effectiveType', {{
+                get: () => '{specs["effective_type"]}'
+            }});
+            Object.defineProperty(navigator.connection, 'type', {{
+                get: () => 'cellular'
+            }});
+            Object.defineProperty(navigator.connection, 'downlink', {{
+                get: () => {specs["downlink"]}
+            }});
+        }}
+
+        // ── screen overrides ──
+        Object.defineProperty(screen, 'width', {{
+            get: () => {specs["device_width"]}
+        }});
+        Object.defineProperty(screen, 'height', {{
+            get: () => {specs["device_height"]}
+        }});
+        Object.defineProperty(screen, 'availWidth', {{
+            get: () => {specs["device_width"]}
+        }});
+        Object.defineProperty(screen, 'availHeight', {{
+            get: () => {specs["device_height"]}
+        }});
+        Object.defineProperty(screen, 'colorDepth', {{
+            get: () => 24
+        }});
+
+        // ── WebGL renderer (Tensor G5 GPU) ──
+        const getParameterOrig = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {{
+            if (param === 0x9245) return '{specs["webgl_vendor"]}';
+            if (param === 0x9246) return '{specs["webgl_renderer"]}';
+            return getParameterOrig.call(this, param);
+        }};
+        if (typeof WebGL2RenderingContext !== 'undefined') {{
+            const getParam2Orig = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(param) {{
+                if (param === 0x9245) return '{specs["webgl_vendor"]}';
+                if (param === 0x9246) return '{specs["webgl_renderer"]}';
+                return getParam2Orig.call(this, param);
+            }};
+        }}
+
+        // ── hide automation ──
+        Object.defineProperty(navigator, 'webdriver', {{
+            get: () => undefined
+        }});
+        """
 
     def summary(self) -> str:
         """Human-readable summary for Telegram messages."""
         return (
-            f"📱 *Device Profile*\n"
+            f"📱 <b>Device Profile</b>\n"
             f"Model: {self.model}\n"
             f"Android: {self.android_version}\n"
-            f"IMEI: `{self.imei}`\n"
-            f"Android ID: `{self.android_id}`\n"
-            f"Session: `{self.session_id[:8]}…`"
+            f"Build: {self.build_id}\n"
+            f"Chrome: {self.chrome_version}\n"
+            f"Session: <code>{self.session_id[:8]}…</code>"
         )
 
 
@@ -106,19 +268,20 @@ class DeviceProfile:
 def create_device_profile() -> DeviceProfile:
     """
     Create a fresh Pixel 10 Pro device profile with unique per-session
-    identifiers.
+    identifiers and a randomised build ID.
     """
+    build_id = _random_build_id()
     chrome_version = _random_chrome_patch()
     template = random.choice(config.USER_AGENT_TEMPLATES)
     user_agent = template.format(
         android=config.ANDROID_VERSION,
         model=config.DEVICE_MODEL,
-        build=config.BUILD_ID,
+        build=build_id,
         chrome=chrome_version,
     )
     fingerprint = _generate_device_fingerprint(
         config.DEVICE_MODEL,
-        config.BUILD_ID,
+        build_id,
         config.ANDROID_VERSION,
     )
     return DeviceProfile(
@@ -127,4 +290,5 @@ def create_device_profile() -> DeviceProfile:
         device_fingerprint=fingerprint,
         user_agent=user_agent,
         chrome_version=chrome_version,
+        build_id=build_id,
     )
