@@ -93,7 +93,7 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options = Options()
 
     if config.HEADLESS:
-        options.add_argument("--headless=new")
+        options.add_argument("--headless")  # Use old headless (less memory than --headless=new)
 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -103,6 +103,18 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--disable-notifications")
     options.add_argument("--window-size=390,844")  # Pixel 10 Pro screen size
     options.add_argument(f"--user-agent={profile.user_agent}")
+
+    # ── Memory-saving flags for constrained environments (Replit) ─────────
+    options.add_argument("--single-process")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-features=VizDisplayCompositor")
+    options.add_argument("--disable-crash-reporter")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--disable-translate")
+    options.add_argument("--no-first-run")
+    options.add_argument("--renderer-process-limit=1")
+    options.add_argument("--js-flags=--max-old-space-size=128")
 
     # ── Locate Chrome/Chromium and chromedriver ───────────────────────────
     chrome_bin, chromedriver_path = _ensure_chromium_installed()
