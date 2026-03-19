@@ -34,10 +34,65 @@ logger = logging.getLogger(__name__)
 
 # ── Driver factory ────────────────────────────────────────────────────────────
 
+def _find_nix_binary(name: str) -> Optional[str]:
+    """Search /nix/store for a binary by *name* (e.g. 'chromium', 'chromedriver')."""
+    import glob
+    for path in glob.glob(f"/nix/store/*/bin/{name}"):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    # Also check ~/.nix-profile
+    profile_path = os.path.expanduser(f"~/.nix-profile/bin/{name}")
+    if os.path.isfile(profile_path) and os.access(profile_path, os.X_OK):
+        return profile_path
+    return None
+
+
+def _ensure_chromium_installed() -> tuple[Optional[str], Optional[str]]:
+    """Find or install Chromium and chromedriver.  Returns (chrome_bin, chromedriver_path)."""
+    import shutil
+    import subprocess
+
+    # 1. Check environment variables
+    chrome_bin = os.environ.get("CHROME_BIN")
+    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
+
+    # 2. Check PATH
+    if not chrome_bin:
+        chrome_bin = (shutil.which("chromium") or shutil.which("chromium-browser")
+                      or shutil.which("google-chrome"))
+    if not chromedriver_path:
+        chromedriver_path = shutil.which("chromedriver")
+
+    # 3. Search Nix store
+    if not chrome_bin:
+        chrome_bin = _find_nix_binary("chromium")
+    if not chromedriver_path:
+        chromedriver_path = _find_nix_binary("chromedriver")
+
+    # 4. Auto-install via nix-env as last resort
+    if not chrome_bin or not chromedriver_path:
+        logger.info("Chrome/chromedriver not found. Attempting nix-env install...")
+        try:
+            subprocess.run(
+                ["nix-env", "-iA", "nixpkgs.chromium", "nixpkgs.chromedriver"],
+                check=True, capture_output=True, timeout=120,
+            )
+            # Re-check after install
+            if not chrome_bin:
+                chrome_bin = (shutil.which("chromium")
+                              or _find_nix_binary("chromium"))
+            if not chromedriver_path:
+                chromedriver_path = (shutil.which("chromedriver")
+                                     or _find_nix_binary("chromedriver"))
+            logger.info("nix-env install completed.")
+        except Exception as exc:
+            logger.warning("nix-env install failed: %s", exc)
+
+    return chrome_bin, chromedriver_path
+
+
 def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     """Return a headless Chrome WebDriver configured for the device profile."""
-    import shutil
-
     options = Options()
 
     if config.HEADLESS:
@@ -52,17 +107,14 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--window-size=390,844")  # Pixel 10 Pro screen size
     options.add_argument(f"--user-agent={profile.user_agent}")
 
-    # ── Locate Chrome/Chromium binary ─────────────────────────────────────
-    chrome_bin = os.environ.get("CHROME_BIN") or shutil.which("chromium") \
-        or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    # ── Locate Chrome/Chromium and chromedriver ───────────────────────────
+    chrome_bin, chromedriver_path = _ensure_chromium_installed()
+
     if chrome_bin:
         options.binary_location = chrome_bin
         logger.info("Using Chrome binary: %s", chrome_bin)
     else:
-        logger.warning(
-            "No Chrome/Chromium binary found. Set CHROME_BIN env var "
-            "or install chromium via your system package manager."
-        )
+        logger.warning("No Chrome/Chromium found – driver may fail to start.")
 
     # Mobile emulation – Pixel 10 Pro viewport
     mobile_emulation = {
@@ -76,19 +128,13 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("--disable-blink-features=AutomationControlled")
 
-    # ── Locate chromedriver ───────────────────────────────────────────────
-    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH") \
-        or shutil.which("chromedriver")
-
+    # ── Create driver ─────────────────────────────────────────────────────
     if chromedriver_path:
         logger.info("Using chromedriver: %s", chromedriver_path)
         service = Service(chromedriver_path)
         driver = webdriver.Chrome(service=service, options=options)
     else:
-        logger.warning(
-            "No chromedriver found via CHROMEDRIVER_PATH or PATH. "
-            "Falling back to Selenium's built-in manager."
-        )
+        logger.warning("No chromedriver found – using Selenium manager fallback.")
         driver = webdriver.Chrome(options=options)
 
     driver.implicitly_wait(config.IMPLICIT_WAIT)
