@@ -587,14 +587,13 @@ def _extract_payment_link(driver: webdriver.Chrome) -> Optional[str]:
                         except Exception:
                             continue
 
-                    # Check page content as last resort
-                    page_text = driver.page_source
-                    if _page_has_offer_content(page_text):
-                        logger.info("✅ Offer page content validated: %s", current_url)
+                    # Also check if current URL itself is partner-eft-onboard
+                    if _is_correct_offer_url(current_url):
+                        logger.info("✅ Current URL is partner-eft-onboard: %s", current_url)
                         return current_url
 
                     logger.warning(
-                        "Page navigated to %s but no valid offer found",
+                        "Page navigated to %s but no partner-eft-onboard link found",
                         current_url,
                     )
                 else:
