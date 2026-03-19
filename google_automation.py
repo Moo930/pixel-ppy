@@ -7,6 +7,7 @@ the activation / payment link.
 """
 
 import logging
+import os
 import time
 import re
 from urllib.parse import urlparse
@@ -35,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     """Return a headless Chrome WebDriver configured for the device profile."""
+    import shutil
+
     options = Options()
 
     if config.HEADLESS:
@@ -49,6 +52,13 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_argument("--window-size=390,844")  # Pixel 10 Pro screen size
     options.add_argument(f"--user-agent={profile.user_agent}")
 
+    # ── Locate Chrome/Chromium binary ─────────────────────────────────────
+    chrome_bin = os.environ.get("CHROME_BIN") or shutil.which("chromium") \
+        or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    if chrome_bin:
+        options.binary_location = chrome_bin
+        logger.info("Using Chrome binary: %s", chrome_bin)
+
     # Mobile emulation – Pixel 10 Pro viewport
     mobile_emulation = {
         "deviceMetrics": {"width": 390, "height": 844, "pixelRatio": 3.0},
@@ -61,19 +71,17 @@ def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("--disable-blink-features=AutomationControlled")
 
-    # Use Selenium's built-in driver manager (Selenium 4.6+)
-    # This avoids webdriver-manager's Chrome version detection issues
-    try:
+    # ── Locate chromedriver ───────────────────────────────────────────────
+    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH") \
+        or shutil.which("chromedriver")
+
+    if chromedriver_path:
+        service = Service(chromedriver_path)
+        driver = webdriver.Chrome(service=service, options=options)
+    else:
+        # Let Selenium's built-in SeleniumManager find it
         driver = webdriver.Chrome(options=options)
-    except Exception:
-        # Fallback: try with explicit Service using shutil to find chromedriver
-        import shutil
-        chromedriver_path = shutil.which("chromedriver")
-        if chromedriver_path:
-            service = Service(chromedriver_path)
-            driver = webdriver.Chrome(service=service, options=options)
-        else:
-            raise
+
     driver.implicitly_wait(config.IMPLICIT_WAIT)
     driver.set_page_load_timeout(config.PAGE_LOAD_TIMEOUT)
     return driver
