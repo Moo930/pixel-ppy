@@ -32,7 +32,13 @@ from telegram.ext import (
 
 import config
 from device_simulator import create_device_profile
-from google_automation import GoogleAutomationError, check_gemini_offer
+from google_automation import (
+    GoogleAutomationError,
+    start_login,
+    submit_2fa_code,
+    check_offer_with_driver,
+    close_driver,
+)
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
@@ -40,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 # ── Conversation states ───────────────────────────────────────────────────────
 AWAIT_EMAIL, AWAIT_PASSWORD = range(2)
+AWAIT_2FA_CODE = 10  # Separate state for 2FA code input
 
 # ── Rate limiting & concurrency ───────────────────────────────────────────────
 # Per-user cooldown: maps chat_id → last /check_offer timestamp
@@ -246,8 +253,36 @@ async def logout(update: Update,
 
 # ── /check_offer ──────────────────────────────────────────────────────────────
 
+async def _report_offer(update_or_chat_id, context, session, offer_link) -> None:
+    """Send the offer result message."""
+    chat_id = (update_or_chat_id if isinstance(update_or_chat_id, int)
+               else update_or_chat_id.effective_chat.id)
+    if offer_link:
+        session["offer_link"] = offer_link
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "🎉 *Gemini Pro Offer Found!*\n\n"
+                "Click the link below to activate your 12-month free Gemini Pro:\n\n"
+                f"🔗 {offer_link}\n\n"
+                "_Use /get\\_link to retrieve this link again._"
+            ),
+            parse_mode="Markdown",
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "😔 No active Gemini Pro offer was detected on your Google One "
+                "account at this time.\n\n"
+                "The offer may not be available for your account region or may "
+                "have already been activated. Try again later."
+            ),
+        )
+
+
 async def check_offer(update: Update,
-                      context: ContextTypes.DEFAULT_TYPE) -> None:
+                      context: ContextTypes.DEFAULT_TYPE) -> int:
     """Run Google One automation and report the result."""
     chat_id = update.effective_chat.id
     session = _get_session(chat_id)
@@ -256,7 +291,7 @@ async def check_offer(update: Update,
         await update.message.reply_text(
             "⚠️ No credentials found. Please use /login first."
         )
-        return
+        return ConversationHandler.END
 
     # ── Rate limit check ──────────────────────────────────────────────────
     last_check = _LAST_CHECK_TIME.get(chat_id, 0)
@@ -267,7 +302,7 @@ async def check_offer(update: Update,
         await update.message.reply_text(
             f"⏳ Please wait {mins}m {secs}s before checking again."
         )
-        return
+        return ConversationHandler.END
     _LAST_CHECK_TIME[chat_id] = time.time()
 
     # ── Concurrency check ─────────────────────────────────────────────────
@@ -276,8 +311,8 @@ async def check_offer(update: Update,
             "🔄 The system is currently at maximum capacity. "
             "Please try again in a minute."
         )
-        _LAST_CHECK_TIME.pop(chat_id, None)  # Don't penalise the user
-        return
+        _LAST_CHECK_TIME.pop(chat_id, None)
+        return ConversationHandler.END
 
     device = session.get("device")
     if not device:
@@ -292,50 +327,136 @@ async def check_offer(update: Update,
     try:
         async with _CHROME_SEMAPHORE:
             # Decode bytearray credentials to str for Selenium
-            email_ba = session["email"]
-            pw_ba = session["password"]
-            email_str = bytes(email_ba).decode("utf-8")
-            pw_str = bytes(pw_ba).decode("utf-8")
+            email_str = bytes(session["email"]).decode("utf-8")
+            pw_str = bytes(session["password"]).decode("utf-8")
 
-            # Run blocking Selenium work in a thread
-            offer_link = await asyncio.to_thread(
-                check_gemini_offer,
-                email_str,
-                pw_str,
-                device,
+            # Start login in a thread
+            driver, status = await asyncio.to_thread(
+                start_login, email_str, pw_str, device,
             )
+
+            if status == "needs_totp":
+                # Store driver in session for 2FA continuation
+                session["_driver"] = driver
+                await update.message.reply_text(
+                    "🔐 *Two-Factor Authentication Required*\n\n"
+                    "Please enter your 6-digit authenticator code:",
+                    parse_mode="Markdown",
+                )
+                return AWAIT_2FA_CODE
+
+            # Login succeeded – check offer
+            try:
+                offer_link = await asyncio.to_thread(
+                    check_offer_with_driver, driver,
+                )
+            finally:
+                close_driver(driver)
+
     except GoogleAutomationError as exc:
         await update.message.reply_text(f"❌ *Error:* {exc}", parse_mode="Markdown")
-        return
+        return ConversationHandler.END
     except Exception as exc:
         logger.exception("Unexpected error in check_offer for chat %s", chat_id)
         await update.message.reply_text(
             f"❌ An unexpected error occurred: {exc}"
         )
-        return
+        return ConversationHandler.END
     finally:
-        # Securely wipe password bytearray in-place after use
+        # Securely wipe password after use
         pw = session.get("password")
         if isinstance(pw, bytearray):
             _secure_wipe(pw)
         session.pop("password", None)
 
-    if offer_link:
-        session["offer_link"] = offer_link
-        await update.message.reply_text(
-            "🎉 *Gemini Pro Offer Found!*\n\n"
-            "Click the link below to activate your 12-month free Gemini Pro:\n\n"
-            f"🔗 {offer_link}\n\n"
-            "_Use /get\\_link to retrieve this link again._",
-            parse_mode="Markdown",
+    await _report_offer(update, context, session, offer_link)
+    return ConversationHandler.END
+
+
+async def handle_2fa_code(update: Update,
+                          context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the TOTP code submitted by the user during 2FA."""
+    chat_id = update.effective_chat.id
+    session = _get_session(chat_id)
+    code = update.message.text.strip()
+
+    # Delete the message containing the code for security
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    driver = session.pop("_driver", None)
+    if not driver:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ Session expired. Please run /check\_offer again.",
         )
-    else:
-        await update.message.reply_text(
-            "😔 No active Gemini Pro offer was detected on your Google One "
-            "account at this time.\n\n"
-            "The offer may not be available for your account region or may "
-            "have already been activated. Try again later."
+        return ConversationHandler.END
+
+    # Validate code format
+    if not code.isdigit() or len(code) != 6:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ Invalid code. Please enter a 6-digit number.",
         )
+        session["_driver"] = driver  # Put driver back
+        return AWAIT_2FA_CODE
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🔄 Verifying code…",
+    )
+
+    try:
+        async with _CHROME_SEMAPHORE:
+            accepted = await asyncio.to_thread(
+                submit_2fa_code, driver, code,
+            )
+
+            if not accepted:
+                close_driver(driver)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ Code rejected. Please run /check\_offer again.",
+                )
+                return ConversationHandler.END
+
+            # 2FA passed – check offer
+            try:
+                offer_link = await asyncio.to_thread(
+                    check_offer_with_driver, driver,
+                )
+            finally:
+                close_driver(driver)
+
+    except Exception as exc:
+        logger.exception("Error in 2FA for chat %s", chat_id)
+        close_driver(driver)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ Error: {exc}",
+        )
+        return ConversationHandler.END
+    finally:
+        pw = session.get("password")
+        if isinstance(pw, bytearray):
+            _secure_wipe(pw)
+        session.pop("password", None)
+
+    await _report_offer(chat_id, context, session, offer_link)
+    return ConversationHandler.END
+
+
+async def cancel_2fa(update: Update,
+                     context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel 2FA input and close the driver."""
+    chat_id = update.effective_chat.id
+    session = _get_session(chat_id)
+    driver = session.pop("_driver", None)
+    close_driver(driver)
+    await update.message.reply_text("❌ 2FA cancelled.")
+    return ConversationHandler.END
 
 
 # ── /get_link ─────────────────────────────────────────────────────────────────
@@ -437,10 +558,21 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", login_cancel)],
     )
 
+    # /check_offer conversation (handles 2FA)
+    offer_conv = ConversationHandler(
+        entry_points=[CommandHandler("check_offer", check_offer)],
+        states={
+            AWAIT_2FA_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_2fa_code)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_2fa)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(login_conv)
     app.add_handler(CommandHandler("logout", logout))
-    app.add_handler(CommandHandler("check_offer", check_offer))
+    app.add_handler(offer_conv)
     app.add_handler(CommandHandler("get_link", get_link))
     app.add_handler(CommandHandler("status", status))
 

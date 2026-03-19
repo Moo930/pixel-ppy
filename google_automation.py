@@ -137,11 +137,15 @@ def _wait_for(driver: webdriver.Chrome, by: str, value: str,
     )
 
 
-def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
+def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> str:
     """
     Perform Gmail / Google account login.
 
-    Returns True on apparent success, False on detectable failure.
+    Returns:
+        "success"    – login completed
+        "failed"     – credentials rejected or error
+        "needs_totp" – TOTP / authenticator code required (driver stays on 2FA page)
+    Raises GoogleAutomationError for unsupported 2FA types.
     """
     try:
         driver.get(config.GMAIL_LOGIN_URL)
@@ -183,27 +187,32 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
         if hostname == "accounts.google.com" and any(
             p in path for p in _2fa_path_patterns
         ):
-            # Try to detect the specific 2FA type for a better message
-            challenge_type = "two-step verification"
             page_text = driver.page_source.lower()
 
-            if "authenticator" in page_text or "verification code" in page_text:
-                challenge_type = "Authenticator app / verification code"
-            elif "security key" in page_text or "usb" in page_text:
+            # TOTP / Authenticator → can be handled interactively
+            if "authenticator" in page_text or "verification code" in page_text \
+                    or "enter the code" in page_text or "6-digit" in page_text:
+                logger.info("TOTP 2FA detected for %s – awaiting code", email)
+                return "needs_totp"
+
+            # Other 2FA types → cannot handle, raise error
+            if "security key" in page_text or "usb" in page_text:
                 challenge_type = "security key"
             elif "phone" in page_text or "sms" in page_text:
                 challenge_type = "SMS / phone verification"
             elif "tap yes" in page_text or "google prompt" in page_text:
                 challenge_type = "Google prompt (tap Yes on your phone)"
+            else:
+                challenge_type = "two-step verification"
 
             logger.warning(
-                "2FA challenge detected for %s: %s (URL: %s)",
+                "Unsupported 2FA for %s: %s (URL: %s)",
                 email, challenge_type, current_url,
             )
             raise GoogleAutomationError(
                 f"Your account requires {challenge_type}. "
-                f"This bot cannot handle two-step verification. "
-                f"Please disable 2FA temporarily or use an App Password."
+                f"This bot cannot handle this type. "
+                f"Please use an App Password instead."
             )
 
         # ── Verify login ──────────────────────────────────────────────────────
@@ -212,7 +221,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
             or (hostname.endswith(".google.com") and "/u/" in path)
         ):
             logger.info("Login succeeded for %s", email)
-            return True
+            return "success"
 
         # Check for error messages
         try:
@@ -221,7 +230,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
             )
             if error_el.text:
                 logger.warning("Login error detected: %s", error_el.text)
-                return False
+                return "failed"
         except NoSuchElementException:
             pass
 
@@ -232,16 +241,82 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
         ):
             logger.info("Login appeared successful for %s (URL: %s)",
                         email, current_url)
-            return True
+            return "success"
 
         logger.warning("Unexpected URL after login: %s", current_url)
-        return False
+        return "failed"
 
     except TimeoutException as exc:
         logger.error("Timeout during login: %s", exc)
-        return False
+        return "failed"
     except WebDriverException as exc:
         logger.error("WebDriver error during login: %s", exc)
+        return "failed"
+
+
+def _submit_totp_code(driver: webdriver.Chrome, code: str) -> bool:
+    """Enter a TOTP / authenticator code on the 2FA challenge page.
+
+    Returns True if the code was accepted and login completed.
+    """
+    try:
+        # Find the TOTP input field
+        totp_field = None
+        for selector in (
+            'input[type="tel"]',           # Most common – numeric input
+            'input[name="totpPin"]',       # Direct name
+            'input[id="totpPin"]',         # Direct ID
+            '#totpPin',
+            'input[type="text"]',          # Fallback
+        ):
+            try:
+                totp_field = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                )
+                if totp_field:
+                    break
+            except TimeoutException:
+                continue
+
+        if not totp_field:
+            logger.error("Could not find TOTP input field")
+            return False
+
+        totp_field.clear()
+        totp_field.send_keys(code)
+        time.sleep(1)
+
+        # Click Next / Verify button
+        for btn_selector in (
+            '#totpNext',
+            'button[jsname="LgbsSe"]',
+            '[data-action="verify"]',
+            'button[type="submit"]',
+        ):
+            try:
+                btn = driver.find_element(By.CSS_SELECTOR, btn_selector)
+                btn.click()
+                break
+            except NoSuchElementException:
+                continue
+
+        time.sleep(3)
+
+        # Check if we left the challenge page
+        current_url = driver.current_url
+        parsed = urlparse(current_url)
+        hostname = parsed.hostname or ""
+        path = parsed.path or ""
+
+        if hostname == "accounts.google.com" and "challenge" in path:
+            logger.warning("Still on challenge page after TOTP – code may be wrong")
+            return False
+
+        logger.info("TOTP accepted, login completed")
+        return True
+
+    except Exception as exc:
+        logger.error("Error submitting TOTP code: %s", exc)
         return False
 
 
@@ -374,34 +449,59 @@ class GoogleAutomationError(Exception):
     """Raised when automation encounters an unrecoverable error."""
 
 
-def check_gemini_offer(email: str, password: str,
-                       device: DeviceProfile) -> Optional[str]:
+def start_login(email: str, password: str,
+                device: DeviceProfile) -> tuple:
     """
-    Main entry point.
+    Start the login process.
 
-    Logs into *email* / *password* using the supplied *device* profile,
-    navigates to Google One, and returns the Gemini Pro offer link (or None).
+    Returns (driver, status) where status is:
+        "success"    – login completed, ready for offer check
+        "needs_totp" – TOTP code needed, driver is on 2FA page
+        "failed"     – login failed
 
-    Raises :class:`GoogleAutomationError` if the driver cannot be started or
-    the login step fails with an error.
+    The caller is responsible for calling driver.quit() when done.
+    Raises GoogleAutomationError on startup or unsupported 2FA.
     """
-    driver: Optional[webdriver.Chrome] = None
+    logger.info("Starting WebDriver for session %s", device.session_id)
+    driver = _build_driver(device)
+
     try:
-        logger.info("Starting WebDriver for session %s", device.session_id)
-        driver = _build_driver(device)
-
-        logged_in = _gmail_login(driver, email, password)
-        if not logged_in:
+        status = _gmail_login(driver, email, password)
+        if status == "failed":
+            driver.quit()
             raise GoogleAutomationError(
                 "Login failed – please check your credentials."
             )
+        return driver, status
+    except GoogleAutomationError:
+        driver.quit()
+        raise
+    except Exception:
+        driver.quit()
+        raise
 
-        offer_link = _navigate_google_one(driver)
-        return offer_link
 
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+def submit_2fa_code(driver, code: str) -> bool:
+    """Submit a TOTP code on a driver that is on the 2FA challenge page.
+
+    Returns True if the code was accepted.
+    """
+    return _submit_totp_code(driver, code)
+
+
+def check_offer_with_driver(driver) -> Optional[str]:
+    """Navigate to Google One and find the Gemini Pro offer link.
+
+    Returns the offer URL or None.
+    """
+    return _navigate_google_one(driver)
+
+
+def close_driver(driver) -> None:
+    """Safely close the WebDriver."""
+    if driver:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
