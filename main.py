@@ -41,7 +41,7 @@ from google_automation import (
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-from logging.handlers import RotatingFileHandler
+from datetime import datetime as _dt
 
 _LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
@@ -52,11 +52,10 @@ _formatter = logging.Formatter(config.LOG_FORMAT)
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_formatter)
 
-# File handler (5 MB per file, keep 3 backups)
-_file_handler = RotatingFileHandler(
-    os.path.join(_LOG_DIR, "bot.log"),
-    maxBytes=5 * 1024 * 1024,
-    backupCount=3,
+# File handler – new file per startup: bot_YYYYMMDD_HHMMSS.log
+_log_filename = f"bot_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log"
+_file_handler = logging.FileHandler(
+    os.path.join(_LOG_DIR, _log_filename),
     encoding="utf-8",
 )
 _file_handler.setFormatter(_formatter)
