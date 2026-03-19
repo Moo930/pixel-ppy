@@ -414,7 +414,11 @@ async def check_offer(update: Update,
                                     )
                                     return ConversationHandler.END
 
-                                # 2FA passed – check offer
+                                # 2FA passed – notify and check offer
+                                await update.message.reply_text(
+                                    f"✅ 登录成功（第 {attempt}/{_MAX_OFFER_ATTEMPTS} 次），"
+                                    "正在检查 Gemini Pro 优惠…"
+                                )
                                 offer_link = await asyncio.to_thread(
                                     check_offer_with_driver, driver,
                                 )
@@ -438,7 +442,11 @@ async def check_offer(update: Update,
                             )
                             return AWAIT_2FA_CODE
                     else:
-                        # Login succeeded (no 2FA) – check offer
+                        # Login succeeded (no 2FA) – notify and check offer
+                        await update.message.reply_text(
+                            f"✅ 登录成功（第 {attempt}/{_MAX_OFFER_ATTEMPTS} 次），"
+                            "正在检查 Gemini Pro 优惠…"
+                        )
                         offer_link = await asyncio.to_thread(
                             check_offer_with_driver, driver,
                         )
@@ -468,6 +476,10 @@ async def check_offer(update: Update,
                         f"⏳ 未检测到优惠，{delay} 秒后开始第 {attempt + 1} 次尝试…"
                     )
                     await asyncio.sleep(delay)
+                    await update.message.reply_text(
+                        f"🔄 开始第 {attempt + 1}/{_MAX_OFFER_ATTEMPTS} 次尝试，"
+                        "正在创建新设备并登录…"
+                    )
 
     except GoogleAutomationError as exc:
         await update.message.reply_text(f"❌ <b>Error:</b> {exc}", parse_mode="HTML")
