@@ -1,0 +1,10 @@
+services:
+  pixel-ppy:
+    build: .
+    container_name: pixel-ppy
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - HEADLESS=true
+    volumes:
+      - ./logs:/app/logs
